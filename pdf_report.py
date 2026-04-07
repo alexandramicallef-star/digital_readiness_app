@@ -166,7 +166,8 @@ class _DocTemplate(SimpleDocTemplate):
 
 # ── Main PDF generator ────────────────────────────────────────────────────────
 def generate_pdf(client_info: dict, results: dict, pillars: list,
-                 maturity_levels: list, top_actions: dict, resources: list) -> bytes:
+                 maturity_levels: list, top_actions: dict, resources: list,
+                 logo_path=None) -> bytes:
     buf = io.BytesIO()
     styles = build_styles()
     maturity = results["maturity"]
@@ -185,32 +186,48 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
     # ══════════════════════════════════════════════════════
     # COVER PAGE
     # ══════════════════════════════════════════════════════
-    # Dark banner
-    cover_banner = Table(
-        [[Paragraph("Digital Readiness<br/>Self-Assessment", styles["title"]),
-          Paragraph("Professional Services  ·  Australia", styles["subtitle"])]],
-        colWidths=[CW],
-    )
-    cover_banner.setStyle(TableStyle([
-        ("BACKGROUND",  (0, 0), (-1, -1), DARK_BLUE),
-        ("TOPPADDING",  (0, 0), (-1, -1), 28),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 28),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 20),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 20),
-        ("ROUNDEDCORNERS", (0, 0), (-1, -1), [8, 8, 8, 8]),
-    ]))
-    # ReportLab doesn't support ROUNDEDCORNERS in all versions; use simple
-    cover_banner = Table(
-        [[Paragraph("Digital Readiness Self-Assessment", styles["title"])]],
-        colWidths=[CW],
-    )
-    cover_banner.setStyle(TableStyle([
-        ("BACKGROUND",   (0, 0), (-1, -1), DARK_BLUE),
-        ("TOPPADDING",   (0, 0), (-1, -1), 36),
-        ("BOTTOMPADDING",(0, 0), (-1, -1), 36),
-        ("LEFTPADDING",  (0, 0), (-1, -1), 20),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 20),
-    ]))
+
+    # Logo + banner row
+    logo_cell = ""
+    if logo_path and hasattr(logo_path, "exists") and logo_path.exists():
+        try:
+            logo_img = Image(str(logo_path))
+            logo_img.drawHeight = 1.4 * cm
+            logo_img.drawWidth  = logo_img.drawHeight * (logo_img.imageWidth / logo_img.imageHeight)
+            logo_img.hAlign     = "RIGHT"
+            logo_cell = logo_img
+        except Exception:
+            logo_cell = ""
+
+    if logo_cell:
+        cover_banner = Table(
+            [[
+                Paragraph("Digital Readiness Self-Assessment", styles["title"]),
+                logo_cell,
+            ]],
+            colWidths=[CW - 4 * cm, 4 * cm],
+        )
+        cover_banner.setStyle(TableStyle([
+            ("BACKGROUND",   (0, 0), (-1, -1), DARK_BLUE),
+            ("TOPPADDING",   (0, 0), (-1, -1), 28),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 28),
+            ("LEFTPADDING",  (0, 0), (-1, -1), 20),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+    else:
+        cover_banner = Table(
+            [[Paragraph("Digital Readiness Self-Assessment", styles["title"])]],
+            colWidths=[CW],
+        )
+        cover_banner.setStyle(TableStyle([
+            ("BACKGROUND",   (0, 0), (-1, -1), DARK_BLUE),
+            ("TOPPADDING",   (0, 0), (-1, -1), 36),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 36),
+            ("LEFTPADDING",  (0, 0), (-1, -1), 20),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 20),
+        ]))
+
     story.append(cover_banner)
     story.append(Spacer(1, 6 * mm))
 
@@ -484,17 +501,17 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
 
     # ── Build PDF ──────────────────────────────────────────────────────────────
     def on_first_page(canvas, doc):
-        _draw_header_footer(canvas, doc, client_info, is_cover=True)
+        _draw_header_footer(canvas, doc, client_info, is_cover=True, logo_path=logo_path)
 
     def on_later_pages(canvas, doc):
-        _draw_header_footer(canvas, doc, client_info, is_cover=False)
+        _draw_header_footer(canvas, doc, client_info, is_cover=False, logo_path=logo_path)
 
     doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
     buf.seek(0)
     return buf.read()
 
 
-def _draw_header_footer(canvas, doc, client_info, is_cover=False):
+def _draw_header_footer(canvas, doc, client_info, is_cover=False, logo_path=None):
     canvas.saveState()
 
     if not is_cover:
@@ -502,12 +519,28 @@ def _draw_header_footer(canvas, doc, client_info, is_cover=False):
         canvas.setStrokeColor(MED_BLUE)
         canvas.setLineWidth(0.5)
         canvas.line(MARGIN, PAGE_H - MARGIN + 4 * mm, PAGE_W - MARGIN, PAGE_H - MARGIN + 4 * mm)
-        # Header text
+        # Header text (left side)
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(GREY)
         canvas.drawString(MARGIN, PAGE_H - MARGIN + 5 * mm, "Digital Readiness Self-Assessment Report")
-        canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - MARGIN + 5 * mm,
-                               f"{client_info.get('business', '')}  ·  {client_info.get('date', '')}")
+        # Logo in header (right side), or text fallback
+        if logo_path and hasattr(logo_path, "exists") and logo_path.exists():
+            try:
+                logo_h = 0.55 * cm
+                from reportlab.lib.utils import ImageReader
+                img_reader = ImageReader(str(logo_path))
+                iw, ih = img_reader.getSize()
+                logo_w = logo_h * (iw / ih)
+                logo_x = PAGE_W - MARGIN - logo_w
+                logo_y = PAGE_H - MARGIN + 3 * mm
+                canvas.drawImage(str(logo_path), logo_x, logo_y,
+                                 width=logo_w, height=logo_h, preserveAspectRatio=True, mask="auto")
+            except Exception:
+                canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - MARGIN + 5 * mm,
+                                       f"{client_info.get('business', '')}  ·  {client_info.get('date', '')}")
+        else:
+            canvas.drawRightString(PAGE_W - MARGIN, PAGE_H - MARGIN + 5 * mm,
+                                   f"{client_info.get('business', '')}  ·  {client_info.get('date', '')}")
 
     # Footer
     canvas.setFont("Helvetica", 7)
@@ -517,7 +550,7 @@ def _draw_header_footer(canvas, doc, client_info, is_cover=False):
     canvas.line(MARGIN, 1.2 * cm, PAGE_W - MARGIN, 1.2 * cm)
     canvas.drawCentredString(
         PAGE_W / 2, 0.7 * cm,
-        f"Digital Readiness Self-Assessment  ·  {client_info.get('business', '')}  "
+        f"Meridian Digital Advisory  ·  Digital Readiness Self-Assessment  ·  {client_info.get('business', '')}  "
         f"·  {client_info.get('date', '')}  ·  Page {doc.page}",
     )
 

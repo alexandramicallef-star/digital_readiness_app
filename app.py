@@ -22,6 +22,7 @@ from database import (
     get_token_info, init_db, is_token_valid, save_assessment,
 )
 from pdf_report import generate_pdf
+from sheets import append_to_sheet
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 APP_DIR   = Path(__file__).parent
@@ -122,15 +123,19 @@ html, body, [class*="css"] { font-family: 'Segoe UI', Arial, sans-serif; }
 # ── Session state ─────────────────────────────────────────────────────────────
 def init_state():
     defaults = {
-        "page":            "welcome",
-        "client_name":     "",
-        "client_business": "",
-        "client_email":    "",
-        "business_size":   None,
-        "current_pillar":  0,
-        "active_token":    None,
-        "_saved_to_db":    False,
-        "admin_auth":      False,
+        "page":                   "welcome",
+        "client_name":            "",
+        "client_surname":         "",
+        "client_business":        "",
+        "client_email":           "",
+        "client_industry":        "",
+        "client_service_product": "",
+        "client_business_age":    "",
+        "business_size":          None,
+        "current_pillar":         0,
+        "active_token":           None,
+        "_saved_to_db":           False,
+        "admin_auth":             False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -260,12 +265,62 @@ def page_welcome():
     st.markdown("---")
     st.subheader("Your Details")
 
+    INDUSTRIES = [
+        "",
+        "Accounting & Finance",
+        "Architecture & Engineering",
+        "Construction & Trades",
+        "Creative & Design",
+        "Education & Training",
+        "Healthcare & Allied Health",
+        "Hospitality & Tourism",
+        "HR & Recruitment",
+        "IT & Technology Services",
+        "Legal Services",
+        "Management Consulting",
+        "Marketing & Communications",
+        "Not-for-Profit",
+        "Real Estate & Property",
+        "Retail & E-commerce",
+        "Other",
+    ]
+    BUSINESS_AGES = [
+        "",
+        "Less than 1 year",
+        "1–2 years",
+        "3–5 years",
+        "6–10 years",
+        "More than 10 years",
+    ]
+
     col1, col2 = st.columns(2)
     with col1:
-        name     = st.text_input("First name *",     value=st.session_state.client_name,     placeholder="e.g. Sandra")
+        name    = st.text_input("First name *",    value=st.session_state.client_name,    placeholder="e.g. Sandra")
     with col2:
-        business = st.text_input("Business name *",  value=st.session_state.client_business, placeholder="e.g. Meridian Advisory")
-    email = st.text_input("Email address *",         value=st.session_state.client_email,    placeholder="e.g. sandra@meridian.com.au")
+        surname = st.text_input("Surname *",       value=st.session_state.client_surname, placeholder="e.g. Smith")
+
+    col3, col4 = st.columns(2)
+    with col3:
+        business = st.text_input("Business name *", value=st.session_state.client_business, placeholder="e.g. Meridian Advisory")
+    with col4:
+        email = st.text_input("Email address *",    value=st.session_state.client_email,    placeholder="e.g. sandra@meridian.com.au")
+
+    col5, col6 = st.columns(2)
+    with col5:
+        industry_idx = INDUSTRIES.index(st.session_state.client_industry) \
+                       if st.session_state.client_industry in INDUSTRIES else 0
+        industry = st.selectbox("Industry *", INDUSTRIES, index=industry_idx,
+                                format_func=lambda x: "— Select your industry —" if x == "" else x)
+    with col6:
+        service_product = st.text_input("Service / Product *",
+                                        value=st.session_state.client_service_product,
+                                        placeholder="e.g. Cleaning services")
+
+    age_idx = BUSINESS_AGES.index(st.session_state.client_business_age) \
+              if st.session_state.client_business_age in BUSINESS_AGES else 0
+    business_age = st.selectbox("How long has your business been operating? *",
+                                BUSINESS_AGES, index=age_idx,
+                                format_func=lambda x: "— Select an option —" if x == "" else x)
 
     st.markdown("---")
     st.subheader("Business Size")
@@ -297,21 +352,29 @@ def page_welcome():
     st.markdown("<div style='margin-top:20px'></div>", unsafe_allow_html=True)
 
     errors = []
-    if not name.strip():                      errors.append("Please enter your first name.")
-    if not business.strip():                  errors.append("Please enter your business name.")
-    if not email.strip():                     errors.append("Please enter your email address.")
-    if not st.session_state.business_size:   errors.append("Please select a business size.")
+    if not name.strip():                       errors.append("Please enter your first name.")
+    if not surname.strip():                    errors.append("Please enter your surname.")
+    if not business.strip():                   errors.append("Please enter your business name.")
+    if not email.strip():                      errors.append("Please enter your email address.")
+    if not industry:                           errors.append("Please select your industry.")
+    if not service_product.strip():            errors.append("Please enter your service or product.")
+    if not business_age:                       errors.append("Please select how long your business has been operating.")
+    if not st.session_state.business_size:    errors.append("Please select a business size.")
 
     if st.button("Start Assessment →", type="primary", use_container_width=True):
         if errors:
             for e in errors:
                 st.error(e)
         else:
-            st.session_state.client_name     = name.strip()
-            st.session_state.client_business = business.strip()
-            st.session_state.client_email    = email.strip()
-            st.session_state.current_pillar  = 0
-            st.session_state.page            = "pillar"
+            st.session_state.client_name            = name.strip()
+            st.session_state.client_surname         = surname.strip()
+            st.session_state.client_business        = business.strip()
+            st.session_state.client_email           = email.strip()
+            st.session_state.client_industry        = industry
+            st.session_state.client_service_product = service_product.strip()
+            st.session_state.client_business_age    = business_age
+            st.session_state.current_pillar         = 0
+            st.session_state.page                   = "pillar"
             st.rerun()
 
 
@@ -459,19 +522,27 @@ def page_results():
     maturity = results["maturity"]
     level    = maturity["level"]
 
-    # ── Save to DB exactly once per session ───────────────────────────────────
+    # ── Save to DB + Google Sheets exactly once per session ──────────────────
     if not st.session_state._saved_to_db:
         client_info = {
-            "name":     st.session_state.client_name,
-            "business": st.session_state.client_business,
-            "email":    st.session_state.client_email,
-            "size":     st.session_state.business_size,
+            "name":            st.session_state.client_name,
+            "surname":         st.session_state.client_surname,
+            "business":        st.session_state.client_business,
+            "email":           st.session_state.client_email,
+            "size":            st.session_state.business_size,
+            "industry":        st.session_state.client_industry,
+            "service_product": st.session_state.client_service_product,
+            "business_age":    st.session_state.client_business_age,
         }
         token = st.session_state.active_token or "no-token"
         try:
-            save_assessment(token, client_info, results)
+            save_assessment(token, client_info, results, raw_scores=scores)
         except Exception:
             pass   # don't break the results page if DB write fails
+        try:
+            append_to_sheet(client_info, results, raw_scores=scores)
+        except Exception:
+            pass   # don't break the results page if Sheets write fails
         st.session_state._saved_to_db = True
 
     render_header(f"{st.session_state.client_name}  ·  {st.session_state.client_business}")
@@ -551,11 +622,15 @@ def page_results():
         with st.spinner("Generating your personalised report…"):
             try:
                 ci = {
-                    "name":     st.session_state.client_name,
-                    "business": st.session_state.client_business,
-                    "email":    st.session_state.client_email,
-                    "size":     st.session_state.business_size,
-                    "date":     date.today().strftime("%d %B %Y").lstrip("0"),
+                    "name":            st.session_state.client_name,
+                    "surname":         st.session_state.client_surname,
+                    "business":        st.session_state.client_business,
+                    "email":           st.session_state.client_email,
+                    "size":            st.session_state.business_size,
+                    "industry":        st.session_state.client_industry,
+                    "service_product": st.session_state.client_service_product,
+                    "business_age":    st.session_state.client_business_age,
+                    "date":            date.today().strftime("%d %B %Y").lstrip("0"),
                 }
                 pdf_bytes = generate_pdf(
                     ci, results, PILLARS, MATURITY_LEVELS, TOP_ACTIONS, RESOURCES, LOGO_PATH
@@ -674,15 +749,19 @@ def page_admin():
         records = get_all_assessments()
         if records:
             df = pd.DataFrame([{
-                "Date":         r["completed_at"][:10],
-                "Time":         r["completed_at"][11:16],
-                "Name":         r["client_name"],
-                "Business":     r["client_business"],
-                "Email":        r["client_email"],
-                "Size":         r["business_size"],
-                "Avg Score":    round(r["avg_score"], 2),
-                "Maturity":     r["maturity_level"],
-                "Total /140":   r["total_score"],
+                "Date":             r["completed_at"][:10],
+                "Time":             r["completed_at"][11:16],
+                "First Name":       r["client_name"],
+                "Surname":          r.get("client_surname", ""),
+                "Business":         r["client_business"],
+                "Email":            r["client_email"],
+                "Industry":         r.get("industry", ""),
+                "Service/Product":  r.get("service_product", ""),
+                "Biz Age":          r.get("business_age", ""),
+                "Size":             r["business_size"],
+                "Avg Score":        round(r["avg_score"], 2),
+                "Maturity":         r["maturity_level"],
+                "Total /140":       r["total_score"],
                 "P1": r["p1_avg"], "P2": r["p2_avg"], "P3": r["p3_avg"],
                 "P4": r["p4_avg"], "P5": r["p5_avg"], "P6": r["p6_avg"],
                 "P7": r["p7_avg"],

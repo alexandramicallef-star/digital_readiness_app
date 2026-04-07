@@ -41,28 +41,52 @@ def init_db():
         """)
         c.execute("""
             CREATE TABLE IF NOT EXISTS assessments (
-                id              INTEGER PRIMARY KEY AUTOINCREMENT,
-                token           TEXT,
-                client_name     TEXT,
-                client_business TEXT,
-                client_email    TEXT,
-                business_size   TEXT,
-                completed_at    TEXT,
-                avg_score       REAL,
-                maturity_level  TEXT,
-                total_score     INTEGER,
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                token             TEXT,
+                client_name       TEXT,
+                client_surname    TEXT    DEFAULT '',
+                client_business   TEXT,
+                client_email      TEXT,
+                business_size     TEXT,
+                industry          TEXT    DEFAULT '',
+                service_product   TEXT    DEFAULT '',
+                business_age      TEXT    DEFAULT '',
+                completed_at      TEXT,
+                avg_score         REAL,
+                maturity_level    TEXT,
+                total_score       INTEGER,
                 p1_avg  REAL, p2_avg REAL, p3_avg REAL, p4_avg REAL,
                 p5_avg  REAL, p6_avg REAL, p7_avg REAL,
-                scores_json     TEXT
+                scores_json       TEXT
             )
         """)
         c.commit()
+
+    # ── Migrate existing databases (add new columns if missing) ────────────────
+    _migrate()
+
+
+def _migrate():
+    """Add any columns introduced after initial deployment."""
+    new_cols = [
+        ("client_surname",  "TEXT DEFAULT ''"),
+        ("industry",        "TEXT DEFAULT ''"),
+        ("service_product", "TEXT DEFAULT ''"),
+        ("business_age",    "TEXT DEFAULT ''"),
+    ]
+    with _conn() as c:
+        for col, col_def in new_cols:
+            try:
+                c.execute(f"ALTER TABLE assessments ADD COLUMN {col} {col_def}")
+                c.commit()
+            except sqlite3.OperationalError:
+                pass  # column already exists — safe to ignore
 
 
 # ── Token management ───────────────────────────────────────────────────────────
 def generate_token(client_name: str = "", client_email: str = "", notes: str = "") -> str:
     """Create a new single-use invite token and return it."""
-    token = secrets.token_urlsafe(20)          # 27-char URL-safe string
+    token = secrets.token_urlsafe(20)
     with _conn() as c:
         c.execute(
             "INSERT INTO tokens (token, client_name, client_email, notes, created_at) "
@@ -116,37 +140,61 @@ def delete_token(token: str):
 
 
 # ── Assessment records ─────────────────────────────────────────────────────────
-def save_assessment(token: str, client_info: dict, results: dict):
+def save_assessment(token: str, client_info: dict, results: dict,
+                    raw_scores: dict | None = None):
     """
     Persist a completed assessment and mark the token as used.
-    client_info keys: name, business, email, size
-    results: output of data.compute_results()
+
+    client_info keys:
+        name, surname, business, email, size, industry, service_product, business_age
+
+    results:
+        output of data.compute_results()
+
+    raw_scores:
+        {pillar_id: [q1_score, q2_score, q3_score, q4_score], ...}
+        Pass st.session_state collect_scores() output for full per-question storage.
     """
     pa = results["pillar_avgs"]
+
+    # Build the full scores JSON — pillar averages + individual question scores
+    scores_payload = {
+        "pillar_avgs":    {str(k): v for k, v in pa.items()},
+        "pillar_totals":  {str(k): v for k, v in results["pillar_totals"].items()},
+    }
+    if raw_scores:
+        # Store as {"p1": [s1,s2,s3,s4], "p2": [...], ...}
+        scores_payload["question_scores"] = {
+            str(pid): scores for pid, scores in raw_scores.items()
+        }
+
     with _conn() as c:
         c.execute("""
             INSERT INTO assessments (
-                token, client_name, client_business, client_email, business_size,
+                token,
+                client_name, client_surname, client_business, client_email,
+                business_size, industry, service_product, business_age,
                 completed_at, avg_score, maturity_level, total_score,
                 p1_avg, p2_avg, p3_avg, p4_avg, p5_avg, p6_avg, p7_avg,
                 scores_json
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             token,
             client_info.get("name", ""),
+            client_info.get("surname", ""),
             client_info.get("business", ""),
             client_info.get("email", ""),
             client_info.get("size", ""),
+            client_info.get("industry", ""),
+            client_info.get("service_product", ""),
+            client_info.get("business_age", ""),
             _now(),
             results["avg_score"],
             results["maturity"]["label"],
             results["total_score"],
             pa.get(1, 0), pa.get(2, 0), pa.get(3, 0), pa.get(4, 0),
             pa.get(5, 0), pa.get(6, 0), pa.get(7, 0),
-            json.dumps({
-                "pillar_avgs":   pa,
-                "pillar_totals": results["pillar_totals"],
-            }),
+            json.dumps(scores_payload),
         ))
         c.commit()
 

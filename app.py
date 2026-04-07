@@ -542,7 +542,7 @@ def page_results():
         try:
             append_to_sheet(client_info, results, raw_scores=scores)
         except Exception:
-            pass   # don't break the results page if Sheets write fails
+            pass   # Sheets errors are handled internally; never break the results page
         st.session_state._saved_to_db = True
 
     render_header(f"{st.session_state.client_name}  ·  {st.session_state.client_business}")
@@ -697,8 +697,8 @@ def page_admin():
         st.rerun()
 
     st.markdown("---")
-    tab_invite, tab_records, tab_tokens = st.tabs(
-        ["✉️  Generate Invites", "📋  Assessment Records", "🔑  Manage Tokens"]
+    tab_invite, tab_records, tab_tokens, tab_sheets = st.tabs(
+        ["✉️  Generate Invites", "📋  Assessment Records", "🔑  Manage Tokens", "📊  Google Sheets"]
     )
 
     # ── TAB 1: Generate invite links ──────────────────────────────────────────
@@ -812,6 +812,54 @@ def page_admin():
                             st.rerun()
         else:
             st.info("No tokens created yet.")
+
+    # ── TAB 4: Google Sheets diagnostics ─────────────────────────────────────
+    with tab_sheets:
+        st.markdown("### Google Sheets Integration")
+        from sheets import test_connection
+
+        sheet_id = _secret("SHEET_ID", "")
+        if sheet_id:
+            st.markdown(f"**Sheet ID configured:** `{sheet_id[:20]}…`")
+        else:
+            st.warning("SHEET_ID is not set in Streamlit secrets yet.")
+
+        st.markdown(
+            "Click the button below to verify that your credentials, Sheet ID, "
+            "and sharing permissions are all working correctly."
+        )
+
+        if st.button("🔌 Test Google Sheets Connection", type="primary"):
+            with st.spinner("Testing connection…"):
+                ok, msg = test_connection()
+            if ok:
+                st.success(msg)
+            else:
+                st.error(f"Connection failed:\n\n{msg}")
+                st.markdown("""
+**Common fixes:**
+- Make sure `SHEET_ID` is added to Streamlit Cloud Secrets
+- Make sure `[gcp_service_account]` block is in Streamlit Cloud Secrets
+- Make sure the Google Sheet is shared (Editor) with the service account email
+- Check that the `private_key` value uses `\\n` for line breaks — not actual newlines
+- Ensure Sheets API and Drive API are enabled in your Google Cloud project
+                """)
+
+        st.markdown("---")
+        st.markdown("**Secrets format reference:**")
+        st.code("""
+SHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
+
+[gcp_service_account]
+type = "service_account"
+project_id = "your-project-id"
+private_key_id = "abc123"
+private_key = "-----BEGIN RSA PRIVATE KEY-----\\nMIIEo...\\n-----END RSA PRIVATE KEY-----\\n"
+client_email = "assessment-writer@your-project.iam.gserviceaccount.com"
+client_id = "123456789"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+        """, language="toml")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

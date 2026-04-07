@@ -15,7 +15,6 @@ The sheet ID is the long string in your Sheet's URL:
   https://docs.google.com/spreadsheets/d/<SHEET_ID>/edit
 """
 
-import json
 import traceback
 
 # ── Column headers (row 1 of the Sheet) ────────────────────────────────────────
@@ -44,7 +43,7 @@ HEADERS = [
 
 
 def _get_client():
-    """Authenticate and return a gspread client using service account credentials."""
+    """Authenticate and return a (gspread_client, error_string) tuple."""
     try:
         import gspread
         from google.oauth2.service_account import Credentials
@@ -54,11 +53,27 @@ def _get_client():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
-        creds_dict = dict(st.secrets["gcp_service_account"])
+
+        # Validate the secret exists
+        try:
+            creds_raw = st.secrets["gcp_service_account"]
+        except KeyError:
+            return None, "Secret 'gcp_service_account' not found in Streamlit secrets."
+        except Exception as e:
+            return None, f"Could not read secrets: {e}"
+
+        creds_dict = dict(creds_raw)
+
+        # Common issue: private_key newlines need to be actual \n chars
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        return gspread.authorize(creds)
-    except Exception:
-        return None
+        gc = gspread.authorize(creds)
+        return gc, None
+
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
 
 
 def _get_sheet(gc, sheet_id: str, tab_name: str = "Assessments"):
@@ -79,38 +94,82 @@ def _ensure_headers(ws):
         ws.insert_row(HEADERS, index=1)
 
 
-def append_to_sheet(client_info: dict, results: dict, raw_scores: dict | None = None):
+def test_connection() -> tuple[bool, str]:
     """
-    Append one row of assessment data to the Google Sheet.
-
-    Parameters
-    ----------
-    client_info : dict
-        Keys: name, surname, business, email, size, industry,
-              service_product, business_age
-    results : dict
-        Output of data.compute_results()
-    raw_scores : dict | None
-        {pillar_id: [q1, q2, q3, q4], ...} — from collect_scores()
-
-    Returns True on success, False on any error (so the app never crashes).
+    Verify that Google Sheets credentials and SHEET_ID are configured correctly.
+    Returns (success: bool, message: str).
+    Call this from the admin panel to diagnose setup issues.
     """
     try:
         import streamlit as st
 
-        # ── Check config ──────────────────────────────────────────────────────
+        # 1. Check SHEET_ID
+        try:
+            sheet_id = str(st.secrets.get("SHEET_ID", "")).strip()
+        except Exception as e:
+            return False, f"Cannot read SHEET_ID from secrets: {e}"
+
+        if not sheet_id:
+            return False, (
+                "SHEET_ID is not set in Streamlit secrets.\n"
+                "Add: SHEET_ID = \"your-google-sheet-id\""
+            )
+
+        # 2. Check credentials
+        gc, err = _get_client()
+        if gc is None:
+            return False, f"Authentication failed: {err}"
+
+        # 3. Try opening the sheet
+        try:
+            import gspread
+            spreadsheet = gc.open_by_key(sheet_id)
+            title = spreadsheet.title
+        except gspread.SpreadsheetNotFound:
+            return False, (
+                f"Spreadsheet not found (ID: {sheet_id[:20]}…).\n"
+                "Make sure the Sheet is shared with the service account email."
+            )
+        except Exception as e:
+            return False, f"Could not open spreadsheet: {type(e).__name__}: {e}"
+
+        # 4. Check/get the Assessments tab
+        try:
+            ws = _get_sheet(gc, sheet_id)
+            row_count = len(ws.get_all_values())
+        except Exception as e:
+            return False, f"Could not access worksheet: {e}"
+
+        return True, (
+            f"✅ Connected to \"{title}\"\n"
+            f"Worksheet: Assessments  |  Rows (incl. header): {row_count}"
+        )
+
+    except Exception as e:
+        return False, f"Unexpected error: {traceback.format_exc()}"
+
+
+def append_to_sheet(client_info: dict, results: dict,
+                    raw_scores: dict | None = None) -> tuple[bool, str]:
+    """
+    Append one row of assessment data to the Google Sheet.
+    Returns (success: bool, error_message: str).
+    """
+    try:
+        import streamlit as st
+
+        # Check SHEET_ID
         try:
             sheet_id = str(st.secrets.get("SHEET_ID", "")).strip()
         except Exception:
             sheet_id = ""
 
         if not sheet_id:
-            # Google Sheets not configured — skip silently
-            return False
+            return False, "SHEET_ID not configured — skipping Sheets write."
 
-        gc = _get_client()
+        gc, err = _get_client()
         if gc is None:
-            return False
+            return False, f"Auth failed: {err}"
 
         ws = _get_sheet(gc, sheet_id)
         _ensure_headers(ws)
@@ -150,8 +209,7 @@ def append_to_sheet(client_info: dict, results: dict, raw_scores: dict | None = 
                 row.append(val if val is not None else "")
 
         ws.append_row(row, value_input_option="USER_ENTERED")
-        return True
+        return True, ""
 
-    except Exception:
-        # Never let a Sheets error break the assessment flow
-        return False
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"

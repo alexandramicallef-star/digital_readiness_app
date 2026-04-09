@@ -43,8 +43,21 @@ HEADERS = [
 
 
 def _get_client():
-    """Authenticate and return a (gspread_client, error_string) tuple."""
+    """Authenticate and return a (gspread_client, error_string) tuple.
+
+    Supports two secrets formats (tries GCP_JSON first, then gcp_service_account block):
+
+    Option A — paste the whole JSON file as one string (recommended, avoids key issues):
+        GCP_JSON = '{ "type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----\\n..." }'
+
+    Option B — individual TOML fields:
+        [gcp_service_account]
+        type = "service_account"
+        private_key = "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n"
+        ...
+    """
     try:
+        import json
         import gspread
         from google.oauth2.service_account import Credentials
         import streamlit as st
@@ -54,19 +67,44 @@ def _get_client():
             "https://www.googleapis.com/auth/drive",
         ]
 
-        # Validate the secret exists
+        creds_dict = None
+
+        # ── Option A: full JSON string (most reliable) ─────────────────────────
         try:
-            creds_raw = st.secrets["gcp_service_account"]
-        except KeyError:
-            return None, "Secret 'gcp_service_account' not found in Streamlit secrets."
-        except Exception as e:
-            return None, f"Could not read secrets: {e}"
+            raw_json = str(st.secrets.get("GCP_JSON", "")).strip()
+            if raw_json:
+                creds_dict = json.loads(raw_json)
+        except Exception:
+            creds_dict = None
 
-        creds_dict = dict(creds_raw)
+        # ── Option B: individual TOML fields ───────────────────────────────────
+        if not creds_dict:
+            try:
+                creds_raw = st.secrets["gcp_service_account"]
+                creds_dict = dict(creds_raw)
+                # Fix mangled private key newlines (common TOML copy-paste issue)
+                if "private_key" in creds_dict:
+                    key = creds_dict["private_key"]
+                    # Replace literal \n (2 chars) with real newline
+                    key = key.replace("\\n", "\n")
+                    # Ensure PEM header/footer are on their own lines
+                    key = key.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n").replace(
+                          "-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
+                    # Collapse any double newlines introduced above
+                    import re
+                    key = re.sub(r"\n{3,}", "\n", key)
+                    creds_dict["private_key"] = key
+            except KeyError:
+                return None, (
+                    "No credentials found. Add either:\n"
+                    "  GCP_JSON = '{...}'  (paste the full JSON file as a string)\n"
+                    "or a [gcp_service_account] block — see the Google Sheets tab for instructions."
+                )
+            except Exception as e:
+                return None, f"Could not read gcp_service_account secret: {e}"
 
-        # Common issue: private_key newlines need to be actual \n chars
-        if "private_key" in creds_dict:
-            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+        if not creds_dict:
+            return None, "Credentials are empty after parsing."
 
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         gc = gspread.authorize(creds)
@@ -210,6 +248,100 @@ def append_to_sheet(client_info: dict, results: dict,
 
         ws.append_row(row, value_input_option="USER_ENTERED")
         return True, ""
+
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def upload_pdf_to_drive(pdf_bytes: bytes, filename: str) -> tuple[bool, str]:
+    """
+    Upload a PDF to Google Drive using the service account credentials.
+
+    Optionally place it in a specific folder by adding to Streamlit secrets:
+        DRIVE_FOLDER_ID = "your-google-drive-folder-id"
+
+    The folder ID is the last segment of the folder's URL:
+        https://drive.google.com/drive/folders/<DRIVE_FOLDER_ID>
+
+    The service account must have Edit access to that folder.
+    If DRIVE_FOLDER_ID is not set, the file is saved to the service account's root Drive.
+
+    Returns (success: bool, error_message: str).
+    """
+    try:
+        import json, requests as req
+        import streamlit as st
+        from google.oauth2.service_account import Credentials
+        from google.auth.transport.requests import Request as GoogleRequest
+
+        # ── Rebuild credentials (same logic as _get_client) ───────────────────
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds_dict = None
+        try:
+            raw_json = str(st.secrets.get("GCP_JSON", "")).strip()
+            if raw_json:
+                creds_dict = json.loads(raw_json)
+        except Exception:
+            creds_dict = None
+
+        if not creds_dict:
+            try:
+                import re
+                creds_raw = st.secrets["gcp_service_account"]
+                creds_dict = dict(creds_raw)
+                if "private_key" in creds_dict:
+                    k = creds_dict["private_key"].replace("\\n", "\n")
+                    k = k.replace("-----BEGIN PRIVATE KEY-----",
+                                  "-----BEGIN PRIVATE KEY-----\n")
+                    k = k.replace("-----END PRIVATE KEY-----",
+                                  "\n-----END PRIVATE KEY-----")
+                    k = re.sub(r"\n{3,}", "\n", k)
+                    creds_dict["private_key"] = k
+            except KeyError:
+                return False, "No GCP credentials configured."
+            except Exception as e:
+                return False, f"Credential read error: {e}"
+
+        if not creds_dict:
+            return False, "Credentials are empty."
+
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        creds.refresh(GoogleRequest())
+
+        # ── Optional target folder ─────────────────────────────────────────────
+        folder_id = str(st.secrets.get("DRIVE_FOLDER_ID", "")).strip()
+
+        # ── Multipart upload to Drive v3 API ───────────────────────────────────
+        metadata = {"name": filename}
+        if folder_id:
+            metadata["parents"] = [folder_id]
+
+        boundary = "meridian_pdf_boundary"
+        meta_part = (
+            f"--{boundary}\r\n"
+            "Content-Type: application/json; charset=UTF-8\r\n\r\n"
+            f"{json.dumps(metadata)}\r\n"
+        ).encode("utf-8")
+        data_part = (
+            f"--{boundary}\r\n"
+            "Content-Type: application/pdf\r\n\r\n"
+        ).encode("utf-8") + pdf_bytes + f"\r\n--{boundary}--".encode("utf-8")
+
+        response = req.post(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart",
+            headers={
+                "Authorization": f"Bearer {creds.token}",
+                "Content-Type": f"multipart/related; boundary={boundary}",
+            },
+            data=meta_part + data_part,
+            timeout=30,
+        )
+        response.raise_for_status()
+        file_id = response.json().get("id", "unknown")
+        return True, file_id
 
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"

@@ -22,7 +22,7 @@ from database import (
     get_token_info, init_db, is_token_valid, save_assessment,
 )
 from pdf_report import generate_pdf
-from sheets import append_to_sheet
+from sheets import append_to_sheet, upload_pdf_to_drive
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 APP_DIR   = Path(__file__).parent
@@ -42,6 +42,24 @@ def _logo_b64() -> str | None:
     if LOGO_PATH.exists():
         return base64.b64encode(LOGO_PATH.read_bytes()).decode()
     return None
+
+
+def _scroll_to_top():
+    """Scroll the Streamlit main panel to the top on page/pillar transitions."""
+    import streamlit.components.v1 as components
+    current = (
+        st.session_state.get("page", ""),
+        st.session_state.get("current_pillar", 0),
+    )
+    if st.session_state.get("_prev_nav") != current:
+        st.session_state["_prev_nav"] = current
+        components.html(
+            "<script>"
+            "var el = window.parent.document.querySelector('section.main');"
+            "if (el) el.scrollTo(0, 0);"
+            "</script>",
+            height=0,
+        )
 
 
 def _logo_tag(height: int = 48) -> str:
@@ -244,6 +262,7 @@ def page_invalid_token():
 # WELCOME PAGE
 # ═════════════════════════════════════════════════════════════════════════════
 def page_welcome():
+    _scroll_to_top()
     render_header()
     render_progress(0)
 
@@ -382,6 +401,7 @@ def page_welcome():
 # PILLAR PAGES
 # ═════════════════════════════════════════════════════════════════════════════
 def page_pillar():
+    _scroll_to_top()
     idx    = st.session_state.current_pillar
     pillar = PILLARS[idx]
     pid    = pillar["id"]
@@ -525,6 +545,7 @@ def _radar_chart(results: dict) -> go.Figure:
 
 
 def page_results():
+    _scroll_to_top()
     scores  = collect_scores()
     results = compute_results(scores)
     maturity = results["maturity"]
@@ -652,6 +673,13 @@ def page_results():
                                    data=pdf_bytes, file_name=fname,
                                    mime="application/pdf", use_container_width=True)
                 st.success("✅ Your report is ready!")
+
+                # Auto-save a copy to Google Drive
+                ok, drive_err = upload_pdf_to_drive(pdf_bytes, fname)
+                if ok:
+                    st.caption("☁️ Report also saved to Google Drive.")
+                elif drive_err:
+                    st.caption(f"ℹ️ Google Drive save skipped: {drive_err}")
             except Exception as e:
                 st.error(f"PDF generation error: {e}")
 

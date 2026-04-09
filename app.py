@@ -54,11 +54,24 @@ def _scroll_to_top():
     if st.session_state.get("_prev_nav") != current:
         st.session_state["_prev_nav"] = current
         components.html(
-            "<script>"
-            "var el = window.parent.document.querySelector('section.main');"
-            "if (el) el.scrollTo(0, 0);"
-            "</script>",
-            height=0,
+            """<script>
+            (function() {
+                var selectors = [
+                    '[data-testid="stMainBlockContainer"]',
+                    'section.main',
+                    '.main',
+                    '[data-testid="block-container"]'
+                ];
+                var doc = window.parent.document;
+                for (var i = 0; i < selectors.length; i++) {
+                    var el = doc.querySelector(selectors[i]);
+                    if (el) { el.scrollTop = 0; break; }
+                }
+                window.parent.scrollTo(0, 0);
+            })();
+            </script>""",
+            height=1,
+            scrolling=False,
         )
 
 
@@ -153,6 +166,8 @@ def init_state():
         "current_pillar":         0,
         "active_token":           None,
         "_saved_to_db":           False,
+        "_pdf_bytes":             None,
+        "_pdf_fname":             None,
         "admin_auth":             False,
     }
     for k, v in defaults.items():
@@ -264,7 +279,6 @@ def page_invalid_token():
 def page_welcome():
     _scroll_to_top()
     render_header()
-    render_progress(0)
 
     st.markdown("""
     This assessment evaluates your business's digital maturity across **7 key pillars** — from
@@ -421,12 +435,6 @@ def page_pillar():
         <p>{pillar['description']}</p>
     </div>""", unsafe_allow_html=True)
 
-    with st.expander("📖 Scoring guide for this pillar — click to expand"):
-        for score, rubric in enumerate(pillar["rubric"], 1):
-            st.markdown(
-                f"**{score} — {list(SCORE_LABELS.values())[score-1].split(' — ')[1]}:** {rubric}"
-            )
-
     st.markdown("")
 
     for qi, q in enumerate(questions):
@@ -551,27 +559,50 @@ def page_results():
     maturity = results["maturity"]
     level    = maturity["level"]
 
-    # ── Save to DB + Google Sheets exactly once per session ──────────────────
+    # ── Build client_info dict (used for save + PDF) ─────────────────────────
+    client_info = {
+        "name":            st.session_state.client_name,
+        "surname":         st.session_state.client_surname,
+        "business":        st.session_state.client_business,
+        "email":           st.session_state.client_email,
+        "size":            st.session_state.business_size,
+        "industry":        st.session_state.client_industry,
+        "service_product": st.session_state.client_service_product,
+        "business_age":    st.session_state.client_business_age,
+        "date":            date.today().strftime("%d %B %Y").lstrip("0"),
+    }
+
+    # ── Save to DB + Sheets + generate PDF — all exactly once per session ────
     if not st.session_state._saved_to_db:
-        client_info = {
-            "name":            st.session_state.client_name,
-            "surname":         st.session_state.client_surname,
-            "business":        st.session_state.client_business,
-            "email":           st.session_state.client_email,
-            "size":            st.session_state.business_size,
-            "industry":        st.session_state.client_industry,
-            "service_product": st.session_state.client_service_product,
-            "business_age":    st.session_state.client_business_age,
-        }
         token = st.session_state.active_token or "no-token"
         try:
             save_assessment(token, client_info, results, raw_scores=scores)
         except Exception:
-            pass   # don't break the results page if DB write fails
+            pass
         try:
             append_to_sheet(client_info, results, raw_scores=scores)
         except Exception:
-            pass   # Sheets errors are handled internally; never break the results page
+            pass
+
+        # Generate PDF and upload to Drive immediately
+        with st.spinner("Preparing your report…"):
+            try:
+                pdf_bytes = generate_pdf(
+                    client_info, results, PILLARS, MATURITY_LEVELS,
+                    TOP_ACTIONS, RESOURCES, LOGO_PATH
+                )
+                fname = (
+                    f"Digital_Readiness_"
+                    f"{st.session_state.client_business.replace(' ', '_')}_"
+                    f"{date.today().strftime('%Y%m%d')}.pdf"
+                )
+                st.session_state._pdf_bytes = pdf_bytes
+                st.session_state._pdf_fname = fname
+                # Upload to Drive silently
+                upload_pdf_to_drive(pdf_bytes, fname)
+            except Exception:
+                pass  # PDF errors should never block the results page
+
         st.session_state._saved_to_db = True
 
     render_header(f"{st.session_state.client_name}  ·  {st.session_state.client_business}")
@@ -647,41 +678,35 @@ def page_results():
 
     st.markdown("---")
     st.subheader("📄 Download Your Report")
-    if st.button("⬇️ Generate & Download PDF Report", type="primary", use_container_width=True):
-        with st.spinner("Generating your personalised report…"):
-            try:
-                ci = {
-                    "name":            st.session_state.client_name,
-                    "surname":         st.session_state.client_surname,
-                    "business":        st.session_state.client_business,
-                    "email":           st.session_state.client_email,
-                    "size":            st.session_state.business_size,
-                    "industry":        st.session_state.client_industry,
-                    "service_product": st.session_state.client_service_product,
-                    "business_age":    st.session_state.client_business_age,
-                    "date":            date.today().strftime("%d %B %Y").lstrip("0"),
-                }
-                pdf_bytes = generate_pdf(
-                    ci, results, PILLARS, MATURITY_LEVELS, TOP_ACTIONS, RESOURCES, LOGO_PATH
-                )
-                fname = (
-                    f"Digital_Readiness_"
-                    f"{st.session_state.client_business.replace(' ','_')}_"
-                    f"{date.today().strftime('%Y%m%d')}.pdf"
-                )
-                st.download_button("📥 Click here to download your PDF",
-                                   data=pdf_bytes, file_name=fname,
-                                   mime="application/pdf", use_container_width=True)
-                st.success("✅ Your report is ready!")
-
-                # Auto-save a copy to Google Drive
-                ok, drive_err = upload_pdf_to_drive(pdf_bytes, fname)
-                if ok:
-                    st.caption("☁️ Report also saved to Google Drive.")
-                elif drive_err:
-                    st.caption(f"ℹ️ Google Drive save skipped: {drive_err}")
-            except Exception as e:
-                st.error(f"PDF generation error: {e}")
+    if st.session_state._pdf_bytes:
+        st.download_button(
+            "⬇️ Download Your Report",
+            data=st.session_state._pdf_bytes,
+            file_name=st.session_state._pdf_fname,
+            mime="application/pdf",
+            type="primary",
+            use_container_width=True,
+        )
+    else:
+        # Fallback: generate on demand if auto-generation failed on first load
+        if st.button("⬇️ Download Your Report", type="primary", use_container_width=True):
+            with st.spinner("Generating your report…"):
+                try:
+                    pdf_bytes = generate_pdf(
+                        client_info, results, PILLARS, MATURITY_LEVELS,
+                        TOP_ACTIONS, RESOURCES, LOGO_PATH
+                    )
+                    fname = (
+                        f"Digital_Readiness_"
+                        f"{st.session_state.client_business.replace(' ', '_')}_"
+                        f"{date.today().strftime('%Y%m%d')}.pdf"
+                    )
+                    st.session_state._pdf_bytes = pdf_bytes
+                    st.session_state._pdf_fname = fname
+                    upload_pdf_to_drive(pdf_bytes, fname)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Could not generate report: {e}")
 
     st.markdown("---")
     c1, c2 = st.columns(2)

@@ -417,9 +417,16 @@ def page_pillar():
         existing  = st.session_state.get(score_key)
         idx_default = (existing - 1) if existing is not None else None
 
+        # Use per-question custom labels if available, else fall back to generic
+        opts_key = key + "_labels"
+        if opts_key in pillar and qi < len(pillar[opts_key]):
+            q_labels = [f"{i+1} — {lbl}" for i, lbl in enumerate(pillar[opts_key][qi])]
+        else:
+            q_labels = list(SCORE_LABELS.values())
+
         chosen = st.radio(
             label=f"score_radio_{pid}_{qi}",
-            options=list(SCORE_LABELS.values()),
+            options=q_labels,
             index=idx_default,
             horizontal=True,
             label_visibility="collapsed",
@@ -846,20 +853,20 @@ def page_admin():
                 """)
 
         st.markdown("---")
-        st.markdown("**Secrets format reference:**")
-        st.code("""
-SHEET_ID = "1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms"
-
-[gcp_service_account]
-type = "service_account"
-project_id = "your-project-id"
-private_key_id = "abc123"
-private_key = "-----BEGIN RSA PRIVATE KEY-----\\nMIIEo...\\n-----END RSA PRIVATE KEY-----\\n"
-client_email = "assessment-writer@your-project.iam.gserviceaccount.com"
-client_id = "123456789"
-auth_uri = "https://accounts.google.com/o/oauth2/auth"
-token_uri = "https://oauth2.googleapis.com/token"
-        """, language="toml")
+        st.markdown("**Recommended secrets format — paste the entire JSON file as one string:**")
+        st.info(
+            "Open your downloaded service account `.json` file in Notepad, "
+            "select all, copy, then paste it as the value of `GCP_JSON` below. "
+            "Keep it all on one line inside the single quotes."
+        )
+        st.code(
+            "SHEET_ID = \"paste-your-google-sheet-id-here\"\n"
+            "GCP_JSON = '{\"type\":\"service_account\",\"project_id\":\"...\","
+            "\"private_key_id\":\"...\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\n...\\n"
+            "-----END PRIVATE KEY-----\\n\",\"client_email\":\"...@....iam.gserviceaccount.com\",...}'",
+            language="toml"
+        )
+        st.markdown("*(The app also accepts a `[gcp_service_account]` TOML block, but the JSON string above avoids private key formatting issues.)*")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

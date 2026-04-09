@@ -418,11 +418,13 @@ def page_pillar():
         idx_default = (existing - 1) if existing is not None else None
 
         # Use per-question custom labels if available, else fall back to generic
+        _letters = ["a", "b", "c", "d", "e"]
         opts_key = key + "_labels"
         if opts_key in pillar and qi < len(pillar[opts_key]):
-            q_labels = [f"{i+1} — {lbl}" for i, lbl in enumerate(pillar[opts_key][qi])]
+            q_labels = [f"{_letters[i]} — {lbl}" for i, lbl in enumerate(pillar[opts_key][qi])]
         else:
-            q_labels = list(SCORE_LABELS.values())
+            generic = list(SCORE_LABELS.values())
+            q_labels = [f"{_letters[i]} — {lbl.split(' — ', 1)[1]}" for i, lbl in enumerate(generic)]
 
         chosen = st.radio(
             label=f"score_radio_{pid}_{qi}",
@@ -433,9 +435,8 @@ def page_pillar():
             key=f"radio_{pid}_{qi}",
         )
         if chosen is not None:
-            val = int(chosen.split(" — ")[0])
+            val = _letters.index(chosen.split(" — ")[0]) + 1
             st.session_state[score_key] = val
-            st.caption(f"ℹ️ {SCORE_DESCRIPTIONS[val]}")
         st.markdown("")
 
     # Navigation

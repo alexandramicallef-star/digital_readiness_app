@@ -187,6 +187,96 @@ def test_connection() -> tuple[bool, str]:
         return False, f"Unexpected error: {traceback.format_exc()}"
 
 
+def test_drive_connection() -> tuple[bool, str]:
+    """
+    Verify that Google Drive credentials are configured and the Drive API is reachable.
+    Optionally checks that DRIVE_FOLDER_ID is accessible if configured.
+    Returns (success: bool, message: str).
+    """
+    try:
+        import json, requests as req
+        import streamlit as st
+        from google.oauth2.service_account import Credentials
+        from google.auth.transport.requests import Request as GoogleRequest
+
+        # 1. Check credentials
+        gc, err = _get_client()
+        if gc is None:
+            return False, f"Authentication failed: {err}"
+
+        # 2. Build Drive-scoped credentials
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds_dict = None
+        try:
+            raw_json = str(st.secrets.get("GCP_JSON", "")).strip()
+            if raw_json:
+                creds_dict = json.loads(raw_json)
+        except Exception:
+            creds_dict = None
+        if not creds_dict:
+            try:
+                import re
+                creds_raw = st.secrets["gcp_service_account"]
+                creds_dict = dict(creds_raw)
+                if "private_key" in creds_dict:
+                    k = creds_dict["private_key"].replace("\\n", "\n")
+                    k = k.replace("-----BEGIN PRIVATE KEY-----", "-----BEGIN PRIVATE KEY-----\n")
+                    k = k.replace("-----END PRIVATE KEY-----", "\n-----END PRIVATE KEY-----")
+                    k = re.sub(r"\n{3,}", "\n", k)
+                    creds_dict["private_key"] = k
+            except KeyError:
+                return False, "No GCP credentials found."
+            except Exception as e:
+                return False, f"Credential read error: {e}"
+
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        creds.refresh(GoogleRequest())
+
+        # 3. Hit the Drive API — list files (quota-safe, just proves connectivity)
+        resp = req.get(
+            "https://www.googleapis.com/drive/v3/files?pageSize=1",
+            headers={"Authorization": f"Bearer {creds.token}"},
+            timeout=15,
+        )
+        if resp.status_code == 403:
+            return False, (
+                "Drive API returned 403 Forbidden.\n"
+                "Make sure the Google Drive API is enabled in your Google Cloud project."
+            )
+        resp.raise_for_status()
+
+        # 4. Optionally verify the target folder
+        folder_id = str(st.secrets.get("DRIVE_FOLDER_ID", "")).strip()
+        folder_msg = ""
+        if folder_id:
+            fr = req.get(
+                f"https://www.googleapis.com/drive/v3/files/{folder_id}"
+                "?fields=name,mimeType",
+                headers={"Authorization": f"Bearer {creds.token}"},
+                timeout=15,
+            )
+            if fr.status_code == 404:
+                return False, (
+                    f"DRIVE_FOLDER_ID '{folder_id[:20]}…' not found or not accessible.\n"
+                    "Share the folder (Editor) with the service account email."
+                )
+            if fr.status_code == 200:
+                folder_name = fr.json().get("name", folder_id)
+                folder_msg = f"  |  Folder: \"{folder_name}\""
+
+        svc_email = creds_dict.get("client_email", "unknown")
+        return True, (
+            f"✅ Google Drive API connected successfully.\n"
+            f"Service account: {svc_email}{folder_msg}"
+        )
+
+    except Exception as e:
+        return False, f"Unexpected error: {traceback.format_exc()}"
+
+
 def append_to_sheet(client_info: dict, results: dict,
                     raw_scores: dict | None = None) -> tuple[bool, str]:
     """

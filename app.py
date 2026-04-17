@@ -55,22 +55,35 @@ def _scroll_to_top():
         st.session_state["_prev_nav"] = current
         components.html(
             """<script>
-            (function() {
+            (function tryScroll(attempts) {
+                var doc = window.parent.document;
+                // Ordered by most-likely to work in current Streamlit versions first
                 var selectors = [
+                    '[data-testid="stMain"]',
+                    '[data-testid="stAppViewContainer"]',
                     '[data-testid="stMainBlockContainer"]',
                     'section.main',
                     '.main',
                     '[data-testid="block-container"]'
                 ];
-                var doc = window.parent.document;
+                var scrolled = false;
                 for (var i = 0; i < selectors.length; i++) {
                     var el = doc.querySelector(selectors[i]);
-                    if (el) { el.scrollTop = 0; break; }
+                    if (el) {
+                        el.scrollTop = 0;
+                        scrolled = true;
+                        break;
+                    }
                 }
-                window.parent.scrollTo(0, 0);
-            })();
-            </script>""",
-            height=1,
+                try { window.parent.scrollTo(0, 0); } catch(e) {}
+                // Retry a few times to handle Streamlit's async rendering
+                if (!scrolled && attempts > 0) {
+                    setTimeout(function() { tryScroll(attempts - 1); }, 120);
+                }
+            })(8);
+            </script>
+            <style>iframe { display: none !important; }</style>""",
+            height=0,
             scrolling=False,
         )
 
@@ -168,6 +181,8 @@ def init_state():
         "_saved_to_db":           False,
         "_pdf_bytes":             None,
         "_pdf_fname":             None,
+        "_drive_upload_ok":       None,
+        "_drive_upload_err":      "",
         "admin_auth":             False,
     }
     for k, v in defaults.items():
@@ -598,10 +613,23 @@ def page_results():
                 )
                 st.session_state._pdf_bytes = pdf_bytes
                 st.session_state._pdf_fname = fname
-                # Upload to Drive silently
-                upload_pdf_to_drive(pdf_bytes, fname)
-            except Exception:
-                pass  # PDF errors should never block the results page
+            except Exception as e:
+                st.session_state._pdf_bytes = None
+                st.session_state._drive_upload_ok  = False
+                st.session_state._drive_upload_err = f"PDF generation failed: {e}"
+
+            # Upload to Drive — capture result for admin diagnostics
+            if st.session_state._pdf_bytes:
+                try:
+                    ok, msg = upload_pdf_to_drive(
+                        st.session_state._pdf_bytes,
+                        st.session_state._pdf_fname or fname,
+                    )
+                    st.session_state._drive_upload_ok  = ok
+                    st.session_state._drive_upload_err = msg if not ok else ""
+                except Exception as e:
+                    st.session_state._drive_upload_ok  = False
+                    st.session_state._drive_upload_err = f"{type(e).__name__}: {e}"
 
         st.session_state._saved_to_db = True
 
@@ -785,6 +813,40 @@ def page_admin():
             st.info("Copy the link above and send it to your client. "
                     "It is single-use — once they complete the assessment it expires.")
 
+            # ── Email draft ───────────────────────────────────────────────────
+            greeting_name = inv_name.strip() if inv_name.strip() else "there"
+            email_subject = "Your Digital Readiness Assessment — Meridian Digital Advisory"
+            email_body = f"""Subject: {email_subject}
+
+Dear {greeting_name},
+
+I hope this message finds you well.
+
+As part of our work together at Meridian Digital Advisory, I'd like to invite you to complete our Digital Readiness Assessment. This tailored assessment evaluates your business's digital maturity across 7 key areas — from strategy and data governance to security and client experience.
+
+It takes approximately 10–15 minutes to complete. At the end you'll receive:
+  • A personalised Digital Readiness Score
+  • A breakdown across 7 digital pillars
+  • A Priority Action Plan tailored to your business
+  • A downloadable PDF report
+
+Please use your unique, single-use link below to access the assessment:
+
+{link}
+
+Please note this link is for your use only — it cannot be shared or reused once completed.
+
+If you have any questions or need assistance, please don't hesitate to reach out.
+
+Kind regards,
+[Your Name]
+Meridian Digital Advisory"""
+
+            st.markdown("---")
+            st.markdown("#### ✉️ Email Draft")
+            st.caption("Copy the text below and paste it into your email client.")
+            st.code(email_body, language=None)
+
         st.markdown("---")
         st.markdown("### Pending Invites (not yet used)")
         all_tokens = get_all_tokens()
@@ -874,21 +936,17 @@ def page_admin():
         else:
             st.info("No tokens created yet.")
 
-    # ── TAB 4: Google Sheets diagnostics ─────────────────────────────────────
+    # ── TAB 4: Google Sheets & Drive diagnostics ─────────────────────────────
     with tab_sheets:
-        st.markdown("### Google Sheets Integration")
-        from sheets import test_connection
+        from sheets import test_connection, test_drive_connection
 
+        # ── Sheets section ────────────────────────────────────────────────────
+        st.markdown("### Google Sheets Integration")
         sheet_id = _secret("SHEET_ID", "")
         if sheet_id:
             st.markdown(f"**Sheet ID configured:** `{sheet_id[:20]}…`")
         else:
             st.warning("SHEET_ID is not set in Streamlit secrets yet.")
-
-        st.markdown(
-            "Click the button below to verify that your credentials, Sheet ID, "
-            "and sharing permissions are all working correctly."
-        )
 
         if st.button("🔌 Test Google Sheets Connection", type="primary"):
             with st.spinner("Testing connection…"):
@@ -897,14 +955,46 @@ def page_admin():
                 st.success(msg)
             else:
                 st.error(f"Connection failed:\n\n{msg}")
-                st.markdown("""
-**Common fixes:**
-- Make sure `SHEET_ID` is added to Streamlit Cloud Secrets
-- Make sure `[gcp_service_account]` block is in Streamlit Cloud Secrets
-- Make sure the Google Sheet is shared (Editor) with the service account email
-- Check that the `private_key` value uses `\\n` for line breaks — not actual newlines
-- Ensure Sheets API and Drive API are enabled in your Google Cloud project
-                """)
+                st.markdown(
+                    "**Common fixes:**\n"
+                    "- Make sure `SHEET_ID` is added to Streamlit Cloud Secrets\n"
+                    "- Make sure `[gcp_service_account]` block is in Streamlit Cloud Secrets\n"
+                    "- Make sure the Google Sheet is shared (Editor) with the service account email\n"
+                    "- Check that the `private_key` value uses `\\\\n` for line breaks — not actual newlines\n"
+                    "- Ensure Sheets API and Drive API are enabled in your Google Cloud project"
+                )
+
+        st.markdown("---")
+
+        # ── Drive section ─────────────────────────────────────────────────────
+        st.markdown("### Google Drive Integration")
+        folder_id = _secret("DRIVE_FOLDER_ID", "")
+        if folder_id:
+            st.markdown(f"**Drive Folder ID configured:** `{folder_id[:20]}…`")
+        else:
+            st.info(
+                "**DRIVE_FOLDER_ID is not set.** PDFs will be saved to the "
+                "service account's own Google Drive root — you will not see them "
+                "in your personal Drive. To save PDFs to a shared folder:\n\n"
+                "1. Create a folder in Google Drive\n"
+                "2. Share it (Editor) with the service account email\n"
+                "3. Copy the folder ID from the URL and add `DRIVE_FOLDER_ID = \"...\"` "
+                "to Streamlit secrets."
+            )
+
+        if st.button("🗂️ Test Google Drive Connection", type="primary"):
+            with st.spinner("Testing Drive connection…"):
+                ok, msg = test_drive_connection()
+            if ok:
+                st.success(msg)
+            else:
+                st.error(f"Drive connection failed:\n\n{msg}")
+                st.markdown(
+                    "**Common fixes:**\n"
+                    "- Ensure the **Google Drive API** is enabled in your Google Cloud project\n"
+                    "- Set `DRIVE_FOLDER_ID` in secrets and share that folder with the service account\n"
+                    "- If using a shared folder, make sure the service account has **Editor** access"
+                )
 
         st.markdown("---")
         st.markdown("**Recommended secrets format — paste the entire JSON file as one string:**")
@@ -915,6 +1005,7 @@ def page_admin():
         )
         st.code(
             "SHEET_ID = \"paste-your-google-sheet-id-here\"\n"
+            "DRIVE_FOLDER_ID = \"paste-your-drive-folder-id-here\"\n"
             "GCP_JSON = '{\"type\":\"service_account\",\"project_id\":\"...\","
             "\"private_key_id\":\"...\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\n...\\n"
             "-----END PRIVATE KEY-----\\n\",\"client_email\":\"...@....iam.gserviceaccount.com\",...}'",

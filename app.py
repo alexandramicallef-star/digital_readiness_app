@@ -731,10 +731,24 @@ def page_results():
                     )
                     st.session_state._pdf_bytes = pdf_bytes
                     st.session_state._pdf_fname = fname
-                    upload_pdf_to_drive(pdf_bytes, fname)
+                    ok, msg = upload_pdf_to_drive(pdf_bytes, fname)
+                    st.session_state._drive_upload_ok  = ok
+                    st.session_state._drive_upload_err = msg if not ok else ""
                     st.rerun()
                 except Exception as e:
                     st.error(f"Could not generate report: {e}")
+
+    # ── Drive upload status (always visible so errors surface immediately) ────
+    drive_ok  = st.session_state.get("_drive_upload_ok")
+    drive_err = st.session_state.get("_drive_upload_err", "")
+    if drive_ok is True:
+        st.caption("☁️ Report saved to Google Drive ✅")
+    elif drive_ok is False:
+        st.warning(
+            f"⚠️ **Google Drive upload failed.**\n\n{drive_err}\n\n"
+            "Your PDF download above is not affected. "
+            "Check the Google Sheets tab in the Admin Dashboard to diagnose."
+        )
 
     st.markdown("---")
     c1, c2 = st.columns(2)

@@ -189,10 +189,10 @@ def test_drive_connection() -> tuple[bool, str]:
                 "then add DRIVE_FOLDER_ID = \"...\" to Streamlit secrets."
             )
 
-        # 4. Verify the folder is accessible and writable
+        # 4. Verify the folder — request driveId to detect My Drive vs Shared Drive
         fr = session.get(
             f"https://www.googleapis.com/drive/v3/files/{folder_id}"
-            "?fields=name,mimeType,capabilities"
+            "?fields=name,mimeType,capabilities,driveId"
             "&supportsAllDrives=true",
             timeout=15,
         )
@@ -212,12 +212,29 @@ def test_drive_connection() -> tuple[bool, str]:
 
         folder_info = fr.json()
         folder_name = folder_info.get("name", folder_id)
+        drive_id    = folder_info.get("driveId")          # only present on Shared Drives
         can_edit    = folder_info.get("capabilities", {}).get("canEdit", None)
-        perm_note   = "" if can_edit is None else (" ✅ write access confirmed" if can_edit else " ⚠️ read-only!")
 
+        # ── Critical check: My Drive folders will always fail with a quota error ─
+        if not drive_id:
+            svc_email = creds_dict.get("client_email", "unknown")
+            return False, (
+                f"⛔ Folder \"{folder_name}\" is on a regular My Drive — uploads WILL fail.\n\n"
+                "Service accounts have no storage quota on personal My Drive folders.\n"
+                "You must use a Shared Drive (formerly Team Drive) instead.\n\n"
+                "How to fix:\n"
+                "  1. In Google Drive, click '+ New' → 'Shared Drive' to create one\n"
+                "     (requires Google Workspace — available on free @gmail.com via Google One)\n"
+                "  2. Inside the Shared Drive, right-click → 'Manage members'\n"
+                f"  3. Add {svc_email} as a 'Contributor' or 'Content Manager'\n"
+                "  4. Copy the Shared Drive's folder ID from its URL and update\n"
+                "     DRIVE_FOLDER_ID in Streamlit secrets"
+            )
+
+        perm_note = "" if can_edit is None else (" ✅ write access confirmed" if can_edit else " ⚠️ read-only!")
         svc_email = creds_dict.get("client_email", "unknown")
         return True, (
-            f"✅ Google Drive API connected and folder verified.\n"
+            f"✅ Google Drive API connected — Shared Drive folder verified.\n"
             f"Folder: \"{folder_name}\"{perm_note}\n"
             f"Service account: {svc_email}"
         )
@@ -393,14 +410,103 @@ def upload_pdf_to_drive(pdf_bytes: bytes, filename: str) -> tuple[bool, str]:
         )
 
         if response.status_code not in (200, 201):
-            # Return the API's error body so it's visible in admin diagnostics
+            resp_text = response.text
+            # Specific, actionable message for the most common service-account error
+            if "storage quota" in resp_text or "do not have storage quota" in resp_text:
+                svc_email = creds_dict.get("client_email", "unknown")
+                return False, (
+                    "Service accounts cannot upload to a regular My Drive folder — "
+                    "they have no storage quota.\n\n"
+                    "Fix: use a Shared Drive folder instead:\n"
+                    "  1. In Google Drive → '+ New' → 'Shared Drive'\n"
+                    "  2. Open the Shared Drive → 'Manage members' →\n"
+                    f"     add {svc_email} as Contributor or Content Manager\n"
+                    "  3. Copy the Shared Drive folder ID from its URL and set\n"
+                    "     DRIVE_FOLDER_ID in Streamlit secrets\n\n"
+                    "Run the Drive test in the Admin Dashboard to confirm the new folder."
+                )
             return False, (
                 f"Drive API returned HTTP {response.status_code}: "
-                f"{response.text[:400]}"
+                f"{resp_text[:400]}"
             )
 
         file_id = response.json().get("id", "unknown")
         return True, file_id
+
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+# Minimal 1-page PDF (no content, valid structure) used by the test upload below
+_TEST_PDF_BYTES = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 72 72]>>endobj\n"
+    b"xref\n0 4\n"
+    b"0000000000 65535 f \n"
+    b"0000000009 00000 n \n"
+    b"0000000058 00000 n \n"
+    b"0000000115 00000 n \n"
+    b"trailer<</Size 4/Root 1 0 R>>\n"
+    b"startxref\n172\n%%EOF\n"
+)
+
+
+def test_drive_upload() -> tuple[bool, str]:
+    """
+    The ONLY reliable way to verify Drive uploads: actually create a small test
+    file in the configured folder, confirm it landed, then delete it.
+
+    Catches permission issues (e.g. storage-quota 403) that metadata-only
+    checks cannot detect.
+
+    Returns (success: bool, message: str).
+    """
+    try:
+        import streamlit as st
+        from google.oauth2.service_account import Credentials
+        from google.auth.transport.requests import AuthorizedSession
+
+        folder_id = str(st.secrets.get("DRIVE_FOLDER_ID", "")).strip()
+        if not folder_id:
+            return False, "DRIVE_FOLDER_ID is not set in Streamlit secrets."
+
+        # ── 1. Attempt the upload using the exact same path as the real upload ─
+        ok, result = upload_pdf_to_drive(_TEST_PDF_BYTES, "_meridian_connection_test.pdf")
+        if not ok:
+            return False, f"Upload failed:\n\n{result}"
+
+        file_id = result   # on success, result is the created file's ID
+
+        # ── 2. Immediately delete the test file ───────────────────────────────
+        creds_dict, err = _get_creds_dict()
+        cleanup_note = ""
+        if creds_dict:
+            scopes = [
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ]
+            creds   = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            session = AuthorizedSession(creds)
+            del_resp = session.delete(
+                f"https://www.googleapis.com/drive/v3/files/{file_id}"
+                "?supportsAllDrives=true",
+                timeout=15,
+            )
+            if del_resp.status_code == 204:
+                cleanup_note = "Test file created and deleted automatically."
+            else:
+                cleanup_note = (
+                    f"Test file created (ID: {file_id}) but auto-delete returned "
+                    f"HTTP {del_resp.status_code} — delete it manually from the folder."
+                )
+        else:
+            cleanup_note = f"Test file created (ID: {file_id}) — delete it manually."
+
+        return True, (
+            f"✅ Drive upload confirmed working!\n{cleanup_note}"
+        )
 
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"

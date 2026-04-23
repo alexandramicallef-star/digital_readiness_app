@@ -22,7 +22,8 @@ from database import (
     get_token_info, init_db, is_token_valid, save_assessment,
 )
 from pdf_report import generate_pdf
-from sheets import append_to_sheet, upload_pdf_to_drive
+from email_report import send_assessment_email
+from sheets import append_to_sheet
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 APP_DIR   = Path(__file__).parent
@@ -181,8 +182,8 @@ def init_state():
         "_saved_to_db":           False,
         "_pdf_bytes":             None,
         "_pdf_fname":             None,
-        "_drive_upload_ok":       None,
-        "_drive_upload_err":      "",
+        "_email_sent_ok":         None,
+        "_email_sent_msg":        "",
         "admin_auth":             False,
     }
     for k, v in defaults.items():
@@ -599,7 +600,7 @@ def page_results():
         except Exception:
             pass
 
-        # Generate PDF and upload to Drive immediately
+        # Generate PDF then email it to the configured notify address
         with st.spinner("Preparing your report…"):
             try:
                 pdf_bytes = generate_pdf(
@@ -615,21 +616,23 @@ def page_results():
                 st.session_state._pdf_fname = fname
             except Exception as e:
                 st.session_state._pdf_bytes = None
-                st.session_state._drive_upload_ok  = False
-                st.session_state._drive_upload_err = f"PDF generation failed: {e}"
+                st.session_state._email_sent_ok  = False
+                st.session_state._email_sent_msg = f"PDF generation failed: {e}"
 
-            # Upload to Drive — capture result for admin diagnostics
+            # Email the report — capture result so it's visible on the page
             if st.session_state._pdf_bytes:
                 try:
-                    ok, msg = upload_pdf_to_drive(
+                    ok, msg = send_assessment_email(
                         st.session_state._pdf_bytes,
                         st.session_state._pdf_fname or fname,
+                        client_info,
+                        results,
                     )
-                    st.session_state._drive_upload_ok  = ok
-                    st.session_state._drive_upload_err = msg if not ok else ""
+                    st.session_state._email_sent_ok  = ok
+                    st.session_state._email_sent_msg = msg
                 except Exception as e:
-                    st.session_state._drive_upload_ok  = False
-                    st.session_state._drive_upload_err = f"{type(e).__name__}: {e}"
+                    st.session_state._email_sent_ok  = False
+                    st.session_state._email_sent_msg = f"{type(e).__name__}: {e}"
 
         st.session_state._saved_to_db = True
 
@@ -731,23 +734,23 @@ def page_results():
                     )
                     st.session_state._pdf_bytes = pdf_bytes
                     st.session_state._pdf_fname = fname
-                    ok, msg = upload_pdf_to_drive(pdf_bytes, fname)
-                    st.session_state._drive_upload_ok  = ok
-                    st.session_state._drive_upload_err = msg if not ok else ""
+                    ok, msg = send_assessment_email(pdf_bytes, fname, client_info, results)
+                    st.session_state._email_sent_ok  = ok
+                    st.session_state._email_sent_msg = msg
                     st.rerun()
                 except Exception as e:
                     st.error(f"Could not generate report: {e}")
 
-    # ── Drive upload status (always visible so errors surface immediately) ────
-    drive_ok  = st.session_state.get("_drive_upload_ok")
-    drive_err = st.session_state.get("_drive_upload_err", "")
-    if drive_ok is True:
-        st.caption("☁️ Report saved to Google Drive ✅")
-    elif drive_ok is False:
+    # ── Email notification status ─────────────────────────────────────────────
+    email_ok  = st.session_state.get("_email_sent_ok")
+    email_msg = st.session_state.get("_email_sent_msg", "")
+    if email_ok is True:
+        st.caption(f"📧 {email_msg}")
+    elif email_ok is False:
         st.warning(
-            f"⚠️ **Google Drive upload failed.**\n\n{drive_err}\n\n"
+            f"⚠️ **Email notification failed.**\n\n{email_msg}\n\n"
             "Your PDF download above is not affected. "
-            "Check the Google Sheets tab in the Admin Dashboard to diagnose."
+            "Check the Email tab in the Admin Dashboard to diagnose."
         )
 
     st.markdown("---")
@@ -801,7 +804,7 @@ def page_admin():
 
     st.markdown("---")
     tab_invite, tab_records, tab_tokens, tab_sheets = st.tabs(
-        ["✉️  Generate Invites", "📋  Assessment Records", "🔑  Manage Tokens", "📊  Google Sheets"]
+        ["✉️  Generate Invites", "📋  Assessment Records", "🔑  Manage Tokens", "⚙️  Integrations"]
     )
 
     # ── TAB 1: Generate invite links ──────────────────────────────────────────
@@ -950,9 +953,10 @@ Meridian Digital Advisory"""
         else:
             st.info("No tokens created yet.")
 
-    # ── TAB 4: Google Sheets & Drive diagnostics ─────────────────────────────
+    # ── TAB 4: Google Sheets & Email diagnostics ─────────────────────────────
     with tab_sheets:
-        from sheets import test_connection, test_drive_connection
+        from sheets import test_connection
+        from email_report import test_email_connection
 
         # ── Sheets section ────────────────────────────────────────────────────
         st.markdown("### Google Sheets Integration")
@@ -980,52 +984,54 @@ Meridian Digital Advisory"""
 
         st.markdown("---")
 
-        # ── Drive section ─────────────────────────────────────────────────────
-        st.markdown("### Google Drive Integration")
-        folder_id = _secret("DRIVE_FOLDER_ID", "")
-        if folder_id:
-            st.markdown(f"**Drive Folder ID configured:** `{folder_id[:20]}…`")
-        else:
-            st.info(
-                "**DRIVE_FOLDER_ID is not set.** PDFs will be saved to the "
-                "service account's own Google Drive root — you will not see them "
-                "in your personal Drive. To save PDFs to a shared folder:\n\n"
-                "1. Create a folder in Google Drive\n"
-                "2. Share it (Editor) with the service account email\n"
-                "3. Copy the folder ID from the URL and add `DRIVE_FOLDER_ID = \"...\"` "
-                "to Streamlit secrets."
-            )
+        # ── Email section ──────────────────────────────────────────────────────
+        st.markdown("### Email Notifications (Gmail)")
+        st.markdown(
+            "When a client completes an assessment the PDF report is automatically "
+            "emailed to **NOTIFY_EMAIL**."
+        )
 
-        if st.button("🗂️ Test Google Drive Connection", type="primary"):
-            with st.spinner("Testing Drive connection…"):
-                ok, msg = test_drive_connection()
+        gmail_addr   = _secret("GMAIL_ADDRESS", "")
+        notify_addr  = _secret("NOTIFY_EMAIL", gmail_addr)
+
+        if gmail_addr:
+            st.markdown(f"**Sending from:** `{gmail_addr}`")
+            st.markdown(f"**Sending to:**   `{notify_addr or gmail_addr}`")
+        else:
+            st.warning("GMAIL_ADDRESS is not set in Streamlit secrets yet.")
+
+        if st.button("📧 Send Test Email", type="primary"):
+            with st.spinner("Sending test email…"):
+                ok, msg = test_email_connection()
             if ok:
                 st.success(msg)
             else:
-                st.error(f"Drive connection failed:\n\n{msg}")
-                st.markdown(
-                    "**Common fixes:**\n"
-                    "- Ensure the **Google Drive API** is enabled in your Google Cloud project\n"
-                    "- Set `DRIVE_FOLDER_ID` in secrets and share that folder with the service account\n"
-                    "- If using a shared folder, make sure the service account has **Editor** access"
-                )
+                st.error(f"Email failed:\n\n{msg}")
 
         st.markdown("---")
-        st.markdown("**Recommended secrets format — paste the entire JSON file as one string:**")
+        st.markdown("#### Gmail App Password setup (one-time)")
         st.info(
-            "Open your downloaded service account `.json` file in Notepad, "
-            "select all, copy, then paste it as the value of `GCP_JSON` below. "
-            "Keep it all on one line inside the single quotes."
+            "You cannot use your regular Gmail password here — Google requires an "
+            "**App Password** for third-party apps.\n\n"
+            "**Steps:**\n"
+            "1. Go to [myaccount.google.com/security](https://myaccount.google.com/security)\n"
+            "2. Make sure **2-Step Verification** is ON\n"
+            "3. Search for **App Passwords** in the search bar\n"
+            "4. Choose app: **Mail** · device: **Windows Computer** (any label works)\n"
+            "5. Click **Generate** — copy the 16-character code shown\n"
+            "6. Paste it as `GMAIL_APP_PASSWORD` in Streamlit secrets (no spaces needed)"
         )
+        st.markdown("**Add these three lines to Streamlit secrets:**")
         st.code(
-            "SHEET_ID = \"paste-your-google-sheet-id-here\"\n"
-            "DRIVE_FOLDER_ID = \"paste-your-drive-folder-id-here\"\n"
-            "GCP_JSON = '{\"type\":\"service_account\",\"project_id\":\"...\","
-            "\"private_key_id\":\"...\",\"private_key\":\"-----BEGIN PRIVATE KEY-----\\n...\\n"
-            "-----END PRIVATE KEY-----\\n\",\"client_email\":\"...@....iam.gserviceaccount.com\",...}'",
-            language="toml"
+            "GMAIL_ADDRESS      = \"you@gmail.com\"\n"
+            "GMAIL_APP_PASSWORD = \"xxxx xxxx xxxx xxxx\"\n"
+            "NOTIFY_EMAIL       = \"you@gmail.com\"   # where reports are sent",
+            language="toml",
         )
-        st.markdown("*(The app also accepts a `[gcp_service_account]` TOML block, but the JSON string above avoids private key formatting issues.)*")
+        st.markdown(
+            "**Also keep your existing secrets** (`SHEET_ID`, `GCP_JSON`) — "
+            "those are still needed for Google Sheets."
+        )
 
 
 # ═════════════════════════════════════════════════════════════════════════════

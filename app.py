@@ -985,20 +985,20 @@ Meridian Digital Advisory"""
         st.markdown("---")
 
         # ── Email section ──────────────────────────────────────────────────────
-        st.markdown("### Email Notifications (Gmail)")
+        st.markdown("### Email Notifications")
         st.markdown(
             "When a client completes an assessment the PDF report is automatically "
-            "emailed to **NOTIFY_EMAIL**."
+            "emailed to **NOTIFY_EMAIL** from `info@meridiandigitaladvisory.com.au`."
         )
 
-        gmail_addr   = _secret("GMAIL_ADDRESS", "")
-        notify_addr  = _secret("NOTIFY_EMAIL", gmail_addr)
+        smtp_user   = _secret("SMTP_USER", "")
+        notify_addr = _secret("NOTIFY_EMAIL", smtp_user)
 
-        if gmail_addr:
-            st.markdown(f"**Sending from:** `{gmail_addr}`")
-            st.markdown(f"**Sending to:**   `{notify_addr or gmail_addr}`")
+        if smtp_user:
+            st.markdown(f"**Sending from:** `{smtp_user}`")
+            st.markdown(f"**Sending to:**   `{notify_addr or smtp_user}`")
         else:
-            st.warning("GMAIL_ADDRESS is not set in Streamlit secrets yet.")
+            st.warning("SMTP_USER is not set in Streamlit secrets yet.")
 
         if st.button("📧 Send Test Email", type="primary"):
             with st.spinner("Sending test email…"):
@@ -1009,23 +1009,19 @@ Meridian Digital Advisory"""
                 st.error(f"Email failed:\n\n{msg}")
 
         st.markdown("---")
-        st.markdown("#### Gmail App Password setup (one-time)")
+        st.markdown("#### SMTP setup (one-time)")
         st.info(
-            "You cannot use your regular Gmail password here — Google requires an "
-            "**App Password** for third-party apps.\n\n"
-            "**Steps:**\n"
-            "1. Go to [myaccount.google.com/security](https://myaccount.google.com/security)\n"
-            "2. Make sure **2-Step Verification** is ON\n"
-            "3. Search for **App Passwords** in the search bar\n"
-            "4. Choose app: **Mail** · device: **Windows Computer** (any label works)\n"
-            "5. Click **Generate** — copy the 16-character code shown\n"
-            "6. Paste it as `GMAIL_APP_PASSWORD` in Streamlit secrets (no spaces needed)"
+            "Emails are sent via your Meridian hosting server using SSL on port 465.\n\n"
+            "Use the **same password** you log into your email with at "
+            "`info@meridiandigitaladvisory.com.au`."
         )
-        st.markdown("**Add these three lines to Streamlit secrets:**")
+        st.markdown("**Add these to Streamlit secrets:**")
         st.code(
-            "GMAIL_ADDRESS      = \"you@gmail.com\"\n"
-            "GMAIL_APP_PASSWORD = \"xxxx xxxx xxxx xxxx\"\n"
-            "NOTIFY_EMAIL       = \"you@gmail.com\"   # where reports are sent",
+            "SMTP_USER     = \"info@meridiandigitaladvisory.com.au\"\n"
+            "SMTP_PASSWORD = \"your-email-password\"\n"
+            "SMTP_HOST     = \"meridiandigitaladvisory.sslsvc.com\"\n"
+            "SMTP_PORT     = 465\n"
+            "NOTIFY_EMAIL  = \"info@meridiandigitaladvisory.com.au\"   # where reports are sent",
             language="toml",
         )
         st.markdown(

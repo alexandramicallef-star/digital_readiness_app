@@ -1,16 +1,17 @@
 """
-email_report.py — Gmail SMTP notification for Meridian Digital Advisory
+email_report.py — SMTP notification for Meridian Digital Advisory
 Sends the completed PDF report to the configured notify address.
 
-Setup (one-time):
-  1. In your Google Account → Security → enable 2-Step Verification.
-  2. Search "App Passwords" → create one for Mail / Windows Computer (or any label).
-  3. Copy the 16-character code (shown once — save it).
-  4. Add to .streamlit/secrets.toml (local) or Streamlit Cloud Secrets:
+Setup (one-time) — add to .streamlit/secrets.toml (local) or Streamlit Cloud Secrets:
 
-        GMAIL_ADDRESS      = "you@gmail.com"
-        GMAIL_APP_PASSWORD = "xxxx xxxx xxxx xxxx"
-        NOTIFY_EMAIL       = "you@gmail.com"   # defaults to GMAIL_ADDRESS if omitted
+    SMTP_USER     = "info@meridiandigitaladvisory.com.au"
+    SMTP_PASSWORD = "your-email-password"
+    SMTP_HOST     = "meridiandigitaladvisory.sslsvc.com"
+    SMTP_PORT     = 465
+    NOTIFY_EMAIL  = "info@meridiandigitaladvisory.com.au"   # where reports are delivered
+
+SMTP_HOST and SMTP_PORT default to the Meridian hosting server if not set.
+NOTIFY_EMAIL defaults to SMTP_USER if not set.
 """
 
 import smtplib
@@ -23,39 +24,40 @@ from email.mime.text import MIMEText
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _get_email_config() -> tuple[str, str, str, str]:
-    """Return (gmail_address, app_password, notify_email, error).
+def _get_email_config() -> tuple[str, str, str, str, str, int]:
+    """Return (user, password, notify_email, host, port, error).
     error is '' on success, message string on failure.
     """
     try:
         import streamlit as st
-        gmail   = str(st.secrets.get("GMAIL_ADDRESS",      "")).strip()
-        pw      = str(st.secrets.get("GMAIL_APP_PASSWORD", "")).strip()
-        notify  = str(st.secrets.get("NOTIFY_EMAIL",       gmail)).strip() or gmail
-        if not gmail:
-            return "", "", "", "GMAIL_ADDRESS is not set in Streamlit secrets."
+        user   = str(st.secrets.get("SMTP_USER",     "")).strip()
+        pw     = str(st.secrets.get("SMTP_PASSWORD", "")).strip()
+        notify = str(st.secrets.get("NOTIFY_EMAIL",  user)).strip() or user
+        host   = str(st.secrets.get("SMTP_HOST", "meridiandigitaladvisory.sslsvc.com")).strip()
+        port   = int(st.secrets.get("SMTP_PORT", 465))
+        if not user:
+            return "", "", "", "", 0, "SMTP_USER is not set in Streamlit secrets."
         if not pw:
-            return "", "", "", "GMAIL_APP_PASSWORD is not set in Streamlit secrets."
-        return gmail, pw, notify, ""
+            return "", "", "", "", 0, "SMTP_PASSWORD is not set in Streamlit secrets."
+        return user, pw, notify, host, port, ""
     except Exception as e:
-        return "", "", "", f"Could not read email secrets: {e}"
+        return "", "", "", "", 0, f"Could not read email secrets: {e}"
 
 
-def _smtp_send(gmail: str, pw: str, to: str, msg: MIMEMultipart) -> tuple[bool, str]:
-    """Authenticate and send via Gmail SMTP TLS. Returns (ok, error_msg)."""
+def _smtp_send(user: str, pw: str, to: str, msg: MIMEMultipart,
+               host: str, port: int) -> tuple[bool, str]:
+    """Authenticate and send via SSL SMTP (port 465). Returns (ok, error_msg)."""
     try:
         ctx = ssl.create_default_context()
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.ehlo()
-            server.starttls(context=ctx)
-            server.login(gmail, pw)
-            server.sendmail(gmail, to, msg.as_string())
+        with smtplib.SMTP_SSL(host, port, context=ctx) as server:
+            server.login(user, pw)
+            server.sendmail(user, to, msg.as_string())
         return True, ""
     except smtplib.SMTPAuthenticationError:
         return False, (
-            "Gmail authentication failed — wrong address or App Password.\n\n"
-            "Make sure you are using an App Password (16 chars), not your regular "
-            "Gmail password. See the Email tab in Admin for setup steps."
+            "SMTP authentication failed — check SMTP_USER and SMTP_PASSWORD in Streamlit secrets.\n\n"
+            "Make sure you are using the correct email address and password for "
+            f"{host}."
         )
     except smtplib.SMTPException as e:
         return False, f"SMTP error: {e}"
@@ -75,7 +77,7 @@ def send_assessment_email(
     Email the PDF report to the configured NOTIFY_EMAIL address.
     Returns (success: bool, message: str).
     """
-    gmail, pw, notify, err = _get_email_config()
+    user, pw, notify, host, port, err = _get_email_config()
     if err:
         return False, err
 
@@ -136,7 +138,7 @@ The full PDF report is attached.
 
     # ── Build MIME message ────────────────────────────────────────────────────
     msg              = MIMEMultipart()
-    msg["From"]      = gmail
+    msg["From"]      = user
     msg["To"]        = notify
     msg["Subject"]   = subject
     msg.attach(MIMEText(body, "plain"))
@@ -147,7 +149,7 @@ The full PDF report is attached.
     part.add_header("Content-Disposition", f'attachment; filename="{pdf_filename}"')
     msg.attach(part)
 
-    ok, err = _smtp_send(gmail, pw, notify, msg)
+    ok, err = _smtp_send(user, pw, notify, msg, host, port)
     if ok:
         return True, f"Report emailed to {notify}"
     return False, err
@@ -155,15 +157,15 @@ The full PDF report is attached.
 
 def test_email_connection() -> tuple[bool, str]:
     """
-    Send a short test email to verify Gmail SMTP credentials.
+    Send a short test email to verify SMTP credentials.
     Returns (success: bool, message: str).
     """
-    gmail, pw, notify, err = _get_email_config()
+    user, pw, notify, host, port, err = _get_email_config()
     if err:
         return False, err
 
     msg            = MIMEMultipart()
-    msg["From"]    = gmail
+    msg["From"]    = user
     msg["To"]      = notify
     msg["Subject"] = "✅ Meridian App — Email Notification Test"
     msg.attach(MIMEText(
@@ -174,7 +176,7 @@ def test_email_connection() -> tuple[bool, str]:
         "plain",
     ))
 
-    ok, err = _smtp_send(gmail, pw, notify, msg)
+    ok, err = _smtp_send(user, pw, notify, msg, host, port)
     if ok:
         return True, f"✅ Test email sent to {notify} — check your inbox."
     return False, err

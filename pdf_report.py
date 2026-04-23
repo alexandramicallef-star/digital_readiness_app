@@ -13,12 +13,13 @@ import matplotlib.patches as mpatches
 import numpy as np
 
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm, mm
+from reportlab.lib.units import cm, mm, inch
 from reportlab.lib.colors import HexColor, white, black, Color
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
+    BaseDocTemplate, Frame, PageTemplate, NextPageTemplate,
+    Paragraph, Spacer, Table, TableStyle,
     Image, HRFlowable, PageBreak, KeepTogether,
 )
 from reportlab.platypus.flowables import BalancedColumns
@@ -137,31 +138,6 @@ def score_color(avg: float) -> HexColor:
 
 
 # ── Header/footer callbacks ───────────────────────────────────────────────────
-class _DocTemplate(SimpleDocTemplate):
-    def __init__(self, *args, client_info=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._client = client_info or {}
-
-    def handle_pageBegin(self):
-        super().handle_pageBegin()
-
-    def afterPage(self):
-        canvas = self.canv
-        # Footer
-        canvas.saveState()
-        canvas.setFont("Helvetica", 7)
-        canvas.setFillColor(GREY)
-        page_num = self.page
-        footer_text = (
-            f"Digital Readiness Self-Assessment  ·  {self._client.get('business', '')}  "
-            f"·  {self._client.get('date', '')}  ·  Page {page_num}"
-        )
-        canvas.drawCentredString(PAGE_W / 2, 0.8 * cm, footer_text)
-        # Footer line
-        canvas.setStrokeColor(LIGHT_BLUE)
-        canvas.setLineWidth(0.5)
-        canvas.line(MARGIN, 1.0 * cm, PAGE_W - MARGIN, 1.0 * cm)
-        canvas.restoreState()
 
 
 # ── Main PDF generator ────────────────────────────────────────────────────────
@@ -172,56 +148,51 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
     styles = build_styles()
     maturity = results["maturity"]
 
-    doc = SimpleDocTemplate(
+    FOOTER_H  = 1.8 * cm          # space reserved at the bottom for the footer
+    COVER_TOP = 4.5 * inch        # content starts 4.5 inches from top on cover page
+
+    # ── Page frames ───────────────────────────────────────────────────────────
+    # Cover frame: content begins 4.5 inches from the top (overlaid on samplePDF.pdf)
+    cover_frame = Frame(
+        MARGIN,
+        FOOTER_H,
+        CW,
+        PAGE_H - COVER_TOP - FOOTER_H,
+        id="cover",
+    )
+    # Body frame: normal top margin for all subsequent pages
+    body_frame = Frame(
+        MARGIN,
+        FOOTER_H,
+        CW,
+        PAGE_H - MARGIN - FOOTER_H,
+        id="body",
+    )
+
+    def on_cover_page(canvas, doc):
+        _draw_header_footer(canvas, doc, client_info, is_cover=True, logo_path=logo_path)
+
+    def on_body_page(canvas, doc):
+        _draw_header_footer(canvas, doc, client_info, is_cover=False, logo_path=logo_path)
+
+    doc = BaseDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=MARGIN, rightMargin=MARGIN,
-        topMargin=MARGIN, bottomMargin=1.8 * cm,
         title="Digital Readiness Self-Assessment Report",
         author=client_info.get("business", ""),
     )
+    doc.addPageTemplates([
+        PageTemplate(id="Cover", frames=[cover_frame], onPage=on_cover_page),
+        PageTemplate(id="Body",  frames=[body_frame],  onPage=on_body_page),
+    ])
 
     story = []
+    # Switch to Body template after the first PageBreak
+    story.append(NextPageTemplate("Body"))
 
     # ══════════════════════════════════════════════════════
-    # COVER PAGE
+    # PAGE 1: CLIENT SUMMARY — overlaid onto samplePDF.pdf cover
     # ══════════════════════════════════════════════════════
-
-    # Cover banner — use samplePDF.png as the full-width header image.
-    # Render at the image's native DPI so it is pixel-perfect with no distortion.
-    # Falls back to a plain dark-blue text banner if the file is missing.
-    _app_dir = logo_path.parent.parent if logo_path else None
-    _banner_png = _app_dir / "samplePDF.png" if _app_dir else None
-
-    if _banner_png and _banner_png.exists():
-        from PIL import Image as PILImage
-        _pil = PILImage.open(str(_banner_png))
-        _dpi_x, _dpi_y = _pil.info.get("dpi", (96, 96))
-        _px_w, _px_h   = _pil.size
-        # Convert pixels → points (1 point = 1/72 inch)
-        _nat_w = _px_w / _dpi_x * 72
-        _nat_h = _px_h / _dpi_y * 72
-
-        banner_img = Image(str(_banner_png))
-        banner_img.drawWidth  = _nat_w
-        banner_img.drawHeight = _nat_h
-        banner_img.hAlign     = "CENTER"
-        cover_banner = banner_img
-    else:
-        cover_banner = Table(
-            [[Paragraph("Digital Readiness Self-Assessment", styles["title"])]],
-            colWidths=[CW],
-        )
-        cover_banner.setStyle(TableStyle([
-            ("BACKGROUND",   (0, 0), (-1, -1), DARK_BLUE),
-            ("TOPPADDING",   (0, 0), (-1, -1), 36),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 36),
-            ("LEFTPADDING",  (0, 0), (-1, -1), 20),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 20),
-        ]))
-
-    story.append(cover_banner)
-    story.append(Spacer(1, 6 * mm))
 
     # Client info table
     client_rows = [
@@ -495,15 +466,42 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
     story.append(about_tbl)
 
     # ── Build PDF ──────────────────────────────────────────────────────────────
-    def on_first_page(canvas, doc):
-        _draw_header_footer(canvas, doc, client_info, is_cover=True, logo_path=logo_path)
-
-    def on_later_pages(canvas, doc):
-        _draw_header_footer(canvas, doc, client_info, is_cover=False, logo_path=logo_path)
-
-    doc.build(story, onFirstPage=on_first_page, onLaterPages=on_later_pages)
+    doc.build(story)
     buf.seek(0)
-    return buf.read()
+    report_bytes = buf.read()
+
+    # ── Merge: overlay generated page 1 onto samplePDF.pdf cover ─────────────
+    # Page 1 of our report (client info at 4.5") is drawn ON TOP of the cover
+    # template so the branding shows through behind it.
+    # Pages 2-N of our report are appended unchanged.
+    _app_dir   = logo_path.parent.parent if logo_path else None
+    _cover_pdf = _app_dir / "samplePDF.pdf" if _app_dir else None
+
+    if _cover_pdf and _cover_pdf.exists():
+        try:
+            from pypdf import PdfWriter, PdfReader
+            cover_reader  = PdfReader(str(_cover_pdf))
+            report_reader = PdfReader(io.BytesIO(report_bytes))
+
+            writer = PdfWriter()
+
+            # Page 1: cover template as base, our content overlaid on top
+            cover_page = cover_reader.pages[0]
+            cover_page.merge_page(report_reader.pages[0])
+            writer.add_page(cover_page)
+
+            # Pages 2-N: generated report pages as-is
+            for page in report_reader.pages[1:]:
+                writer.add_page(page)
+
+            merged = io.BytesIO()
+            writer.write(merged)
+            merged.seek(0)
+            return merged.read()
+        except Exception:
+            pass  # fall through and return un-merged report
+
+    return report_bytes
 
 
 def _draw_header_footer(canvas, doc, client_info, is_cover=False, logo_path=None):

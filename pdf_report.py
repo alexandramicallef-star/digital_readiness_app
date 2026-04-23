@@ -63,8 +63,8 @@ def build_styles():
     add("body",        fontSize=9,  textColor=black,      spaceAfter=4,   leading=13, fontName="Helvetica")
     add("body_small",  fontSize=8,  textColor=GREY,       spaceAfter=3,   leading=12, fontName="Helvetica")
     add("pillar_name", fontSize=10, textColor=WHITE,      fontName="Helvetica-Bold", leading=14)
-    add("score_label", fontSize=9,  textColor=GREY,       alignment=TA_CENTER, fontName="Helvetica")
-    add("score_val",   fontSize=16, textColor=DARK_BLUE,  alignment=TA_CENTER, fontName="Helvetica-Bold")
+    add("score_label", fontSize=9,  textColor=WHITE,      alignment=TA_CENTER, fontName="Helvetica")
+    add("score_val",   fontSize=16, textColor=WHITE,      alignment=TA_CENTER, fontName="Helvetica-Bold")
     add("action",      fontSize=9,  textColor=black,      leftIndent=8,   spaceAfter=3, leading=13, fontName="Helvetica")
     add("resource",    fontSize=8,  textColor=MED_BLUE,   spaceAfter=3, fontName="Helvetica")
     add("footer",      fontSize=7,  textColor=GREY,       alignment=TA_CENTER, fontName="Helvetica")
@@ -187,34 +187,26 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
     # COVER PAGE
     # ══════════════════════════════════════════════════════
 
-    # Logo + banner row
-    logo_cell = ""
-    if logo_path and hasattr(logo_path, "exists") and logo_path.exists():
-        try:
-            logo_img = Image(str(logo_path))
-            logo_img.drawHeight = 1.4 * cm
-            logo_img.drawWidth  = logo_img.drawHeight * (logo_img.imageWidth / logo_img.imageHeight)
-            logo_img.hAlign     = "RIGHT"
-            logo_cell = logo_img
-        except Exception:
-            logo_cell = ""
+    # Cover banner — use samplePDF.png as the full-width header image.
+    # Render at the image's native DPI so it is pixel-perfect with no distortion.
+    # Falls back to a plain dark-blue text banner if the file is missing.
+    _app_dir = logo_path.parent.parent if logo_path else None
+    _banner_png = _app_dir / "samplePDF.png" if _app_dir else None
 
-    if logo_cell:
-        cover_banner = Table(
-            [[
-                Paragraph("Digital Readiness Self-Assessment", styles["title"]),
-                logo_cell,
-            ]],
-            colWidths=[CW - 4 * cm, 4 * cm],
-        )
-        cover_banner.setStyle(TableStyle([
-            ("BACKGROUND",   (0, 0), (-1, -1), DARK_BLUE),
-            ("TOPPADDING",   (0, 0), (-1, -1), 28),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 28),
-            ("LEFTPADDING",  (0, 0), (-1, -1), 20),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 16),
-            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
-        ]))
+    if _banner_png and _banner_png.exists():
+        from PIL import Image as PILImage
+        _pil = PILImage.open(str(_banner_png))
+        _dpi_x, _dpi_y = _pil.info.get("dpi", (96, 96))
+        _px_w, _px_h   = _pil.size
+        # Convert pixels → points (1 point = 1/72 inch)
+        _nat_w = _px_w / _dpi_x * 72
+        _nat_h = _px_h / _dpi_y * 72
+
+        banner_img = Image(str(_banner_png))
+        banner_img.drawWidth  = _nat_w
+        banner_img.drawHeight = _nat_h
+        banner_img.hAlign     = "CENTER"
+        cover_banner = banner_img
     else:
         cover_banner = Table(
             [[Paragraph("Digital Readiness Self-Assessment", styles["title"])]],
@@ -263,8 +255,8 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
     maturity_tbl = Table(
         [[
             Paragraph(f"Level {maturity['level']}", ParagraphStyle(
-                "badge_lvl", fontName="Helvetica-Bold", fontSize=28,
-                textColor=WHITE, alignment=TA_CENTER)),
+                "badge_lvl", fontName="Helvetica-Bold", fontSize=16,
+                textColor=WHITE, alignment=TA_CENTER, leading=20)),
             Paragraph(
                 f"{maturity['label']}<br/>"
                 f"<font size='10' color='#FFFFFF'>Average score: {results['avg_score']:.2f} / 5.00  ·  {maturity['range']}</font><br/><br/>"
@@ -282,6 +274,9 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
         ("BOTTOMPADDING",(0, 0), (-1, -1), 18),
         ("LEFTPADDING",  (0, 0), (-1, -1), 16),
         ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+        # Tight horizontal padding on the badge cell so "Level X" never wraps
+        ("LEFTPADDING",  (0, 0), (0, -1),  4),
+        ("RIGHTPADDING", (0, 0), (0, -1),  4),
         ("LINEAFTER",    (0, 0), (0, -1), 1, WHITE),
     ]))
     story.append(maturity_tbl)

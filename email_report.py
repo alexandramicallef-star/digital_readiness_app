@@ -155,6 +155,31 @@ The full PDF report is attached.
     return False, err
 
 
+def send_invite_email(
+    to_email: str,
+    body: str,
+    subject: str = "Your Digital Readiness Assessment — Meridian Digital Advisory",
+) -> tuple[bool, str]:
+    """
+    Send the client invite email.
+    Returns (success: bool, message: str).
+    """
+    user, pw, _notify, host, port, err = _get_email_config()
+    if err:
+        return False, err
+
+    msg            = MIMEMultipart()
+    msg["From"]    = user
+    msg["To"]      = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    ok, err = _smtp_send(user, pw, to_email, msg, host, port)
+    if ok:
+        return True, f"✅ Invite email sent to {to_email}"
+    return False, err
+
+
 def test_email_connection() -> tuple[bool, str]:
     """
     Send a short test email to verify SMTP credentials.

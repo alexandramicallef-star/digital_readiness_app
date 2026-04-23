@@ -22,7 +22,7 @@ from database import (
     get_token_info, init_db, is_token_valid, save_assessment,
 )
 from pdf_report import generate_pdf
-from email_report import send_assessment_email
+from email_report import send_assessment_email, send_invite_email
 from sheets import append_to_sheet
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -185,6 +185,14 @@ def init_state():
         "_email_sent_ok":         None,
         "_email_sent_msg":        "",
         "admin_auth":             False,
+        "_invite_token":          None,
+        "_invite_link":           "",
+        "_invite_name":           "",
+        "_invite_email":          "",
+        "_invite_body":           "",
+        "_invite_editing":        False,
+        "_invite_sent_ok":        None,
+        "_invite_sent_msg":       "",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -825,44 +833,113 @@ def page_admin():
         if submitted:
             token = generate_token(inv_name, inv_email, inv_notes)
             link  = f"{base_url.rstrip('/')}/?token={token}"
+            greeting = inv_name.strip() if inv_name.strip() else "there"
+            st.session_state._invite_token   = token
+            st.session_state._invite_link    = link
+            st.session_state._invite_name    = inv_name.strip()
+            st.session_state._invite_email   = inv_email.strip()
+            st.session_state._invite_editing = False
+            st.session_state._invite_sent_ok = None
+            st.session_state._invite_sent_msg = ""
+            st.session_state._invite_body = (
+                f"Dear {greeting},\n\n"
+                "At Meridian Digital Advisory, we work with businesses like yours to identify "
+                "where digital tools and practices can make the biggest difference — saving time, "
+                "reducing risk, and creating better client experiences.\n\n"
+                "To help us understand where your business currently stands, we've prepared a short "
+                "Digital Readiness Self-Assessment. It takes around 10 minutes to complete and covers "
+                "seven key areas: strategy, data, technology, automation, people, client experience, "
+                "and security.\n\n"
+                "Complete your assessment here:\n"
+                f"{link}\n\n"
+                "Once submitted, you'll receive a personalised report outlining your current digital "
+                "maturity level, your strengths, and a prioritised action plan tailored to your business.\n\n"
+                "This assessment is the first step toward understanding what's working, what's holding "
+                "you back, and how to advance your business with confidence. There are no right or wrong "
+                "answers — just honest insights that set the foundation for meaningful progress.\n\n"
+                "We look forward to reviewing your results and exploring the opportunities ahead together.\n\n"
+                "Warm regards,\n\n"
+                "Meridian Digital Advisory\n"
+                "info@meridiandigitaladvisory.com.au\n"
+                "www.meridiandigitaladvisory.com.au"
+            )
+
+        # ── Invite email popup (persists after form submit) ───────────────────
+        if st.session_state._invite_token:
             st.success("✅ Invite link created!")
-            st.code(link, language=None)
-            st.info("Copy the link above and send it to your client. "
-                    "It is single-use — once they complete the assessment it expires.")
-
-            # ── Email draft ───────────────────────────────────────────────────
-            greeting_name = inv_name.strip() if inv_name.strip() else "there"
-            email_subject = "Your Digital Readiness Assessment — Meridian Digital Advisory"
-            email_body = f"""Subject: {email_subject}
-
-Dear {greeting_name},
-
-I hope this message finds you well.
-
-As part of our work together at Meridian Digital Advisory, I'd like to invite you to complete our Digital Readiness Assessment. This tailored assessment evaluates your business's digital maturity across 7 key areas — from strategy and data governance to security and client experience.
-
-It takes approximately 10–15 minutes to complete. At the end you'll receive:
-  • A personalised Digital Readiness Score
-  • A breakdown across 7 digital pillars
-  • A Priority Action Plan tailored to your business
-  • A downloadable PDF report
-
-Please use your unique, single-use link below to access the assessment:
-
-{link}
-
-Please note this link is for your use only — it cannot be shared or reused once completed.
-
-If you have any questions or need assistance, please don't hesitate to reach out.
-
-Kind regards,
-[Your Name]
-Meridian Digital Advisory"""
+            st.code(st.session_state._invite_link, language=None)
+            st.caption("Single-use link — expires once the client completes the assessment.")
 
             st.markdown("---")
-            st.markdown("#### ✉️ Email Draft")
-            st.caption("Copy the text below and paste it into your email client.")
-            st.code(email_body, language=None)
+            st.markdown("#### ✉️ Client Invite Email")
+
+            editing = st.session_state._invite_editing
+
+            if not editing:
+                # Read-only view
+                st.text_area(
+                    "Email preview (click Edit to make changes):",
+                    value=st.session_state._invite_body,
+                    height=340,
+                    disabled=True,
+                    key="_invite_preview",
+                )
+                col_edit, col_send, col_gap = st.columns([1, 2, 3])
+                with col_edit:
+                    if st.button("✏️ Edit", key="_btn_edit_invite"):
+                        st.session_state._invite_editing = True
+                        st.rerun()
+                with col_send:
+                    if st.button("📧 Send to Client", type="primary", key="_btn_send_invite"):
+                        email = st.session_state._invite_email
+                        if not email or "@" not in email or "." not in email.split("@")[-1]:
+                            st.error("⚠️ Please enter a valid client email address in the form above before sending.")
+                        else:
+                            with st.spinner("Sending invite email…"):
+                                ok, msg = send_invite_email(
+                                    email,
+                                    st.session_state._invite_body,
+                                )
+                            if ok:
+                                st.session_state._invite_sent_ok  = True
+                                st.session_state._invite_sent_msg = msg
+                                st.rerun()
+                            else:
+                                st.error(f"Send failed:\n\n{msg}")
+            else:
+                # Editable view
+                edited = st.text_area(
+                    "Edit email text:",
+                    value=st.session_state._invite_body,
+                    height=380,
+                    key="_invite_editor",
+                )
+                col_done, col_send, col_gap = st.columns([1, 2, 3])
+                with col_done:
+                    if st.button("✅ Done", key="_btn_done_edit"):
+                        st.session_state._invite_body    = edited
+                        st.session_state._invite_editing = False
+                        st.rerun()
+                with col_send:
+                    if st.button("📧 Send to Client", type="primary", key="_btn_send_edited"):
+                        st.session_state._invite_body = edited
+                        email = st.session_state._invite_email
+                        if not email or "@" not in email or "." not in email.split("@")[-1]:
+                            st.error("⚠️ Please enter a valid client email address in the form above before sending.")
+                        else:
+                            with st.spinner("Sending invite email…"):
+                                ok, msg = send_invite_email(email, edited)
+                            if ok:
+                                st.session_state._invite_sent_ok  = True
+                                st.session_state._invite_sent_msg = msg
+                                st.session_state._invite_editing  = False
+                                st.rerun()
+                            else:
+                                st.error(f"Send failed:\n\n{msg}")
+
+            # Sent confirmation
+            if st.session_state._invite_sent_ok:
+                st.success(st.session_state._invite_sent_msg)
 
         st.markdown("---")
         st.markdown("### Pending Invites (not yet used)")

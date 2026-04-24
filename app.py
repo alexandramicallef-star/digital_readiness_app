@@ -27,7 +27,7 @@ from sheets import append_to_sheet
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 APP_DIR   = Path(__file__).parent
-LOGO_PATH = APP_DIR / "images" / "meridian-logoV5.png"
+LOGO_PATH = APP_DIR / "images" / "meridian-logoV6.png"
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(

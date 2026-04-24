@@ -32,7 +32,7 @@ LOGO_PATH = APP_DIR / "images" / "meridian-logoV6.png"
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Digital Readiness Assessment | Meridian Digital Advisory",
-    page_icon="📊",
+    page_icon=str(APP_DIR / "images" / "meridian-favicon.png"),
     layout="centered",
     initial_sidebar_state="collapsed",
 )

@@ -6,3 +6,5 @@ matplotlib>=3.7.0
 numpy>=1.24.0
 gspread>=5.10.0
 google-auth>=2.20.0
+pypdf>=3.17.0
+Pillow>=9.0.0

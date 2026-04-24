@@ -6,6 +6,10 @@ Uses ReportLab for layout and Matplotlib for the radar chart.
 import io
 import math
 import datetime
+from pathlib import Path
+
+# Directory containing this file — used to locate samplePDF.pdf and logo assets
+_HERE = Path(__file__).parent
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -471,36 +475,32 @@ def generate_pdf(client_info: dict, results: dict, pillars: list,
     report_bytes = buf.read()
 
     # ── Merge: overlay generated page 1 onto samplePDF.pdf cover ─────────────
-    # Page 1 of our report (client info at 4.5") is drawn ON TOP of the cover
-    # template so the branding shows through behind it.
-    # Pages 2-N of our report are appended unchanged.
-    _app_dir   = logo_path.parent.parent if logo_path else None
-    _cover_pdf = _app_dir / "samplePDF.pdf" if _app_dir else None
+    # _HERE always resolves to the folder containing pdf_report.py, regardless
+    # of how or where the app is run (local, Streamlit Cloud, etc.)
+    _cover_pdf = _HERE / "samplePDF.pdf"
 
-    if _cover_pdf and _cover_pdf.exists():
-        try:
-            from pypdf import PdfWriter, PdfReader
-            cover_reader  = PdfReader(str(_cover_pdf))
-            report_reader = PdfReader(io.BytesIO(report_bytes))
+    if _cover_pdf.exists():
+        from pypdf import PdfWriter, PdfReader
+        cover_reader  = PdfReader(str(_cover_pdf))
+        report_reader = PdfReader(io.BytesIO(report_bytes))
 
-            writer = PdfWriter()
+        writer = PdfWriter()
 
-            # Page 1: cover template as base, our content overlaid on top
-            cover_page = cover_reader.pages[0]
-            cover_page.merge_page(report_reader.pages[0])
-            writer.add_page(cover_page)
+        # Page 1: cover template as base, our content overlaid on top
+        cover_page = cover_reader.pages[0]
+        cover_page.merge_page(report_reader.pages[0])
+        writer.add_page(cover_page)
 
-            # Pages 2-N: generated report pages as-is
-            for page in report_reader.pages[1:]:
-                writer.add_page(page)
+        # Pages 2-N: generated report pages as-is
+        for page in report_reader.pages[1:]:
+            writer.add_page(page)
 
-            merged = io.BytesIO()
-            writer.write(merged)
-            merged.seek(0)
-            return merged.read()
-        except Exception:
-            pass  # fall through and return un-merged report
+        merged = io.BytesIO()
+        writer.write(merged)
+        merged.seek(0)
+        return merged.read()
 
+    # samplePDF.pdf not found — return report without cover template
     return report_bytes
 
 
